@@ -1,0 +1,30 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.vscode/
+.idea/
+*.swp
+
+# Node / tooling (если появится сборка/линтеры)
+node_modules/
+npm-debug.log*
+
+# Упаковка расширения
+dist/
+*.zip
+*.crx
+*.pem
+
+# Локальное / секреты
+.env
+*.local
+
+# Временные дампы API (из тестов вручную)
+*.tmp
+lots.json
+l.json
+
+# Локальные настройки Claude Code
+.claude/settings.local.json

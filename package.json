@@ -1,0 +1,12 @@
+{
+  "name": "pigrating",
+  "version": "0.2.0",
+  "description": "Chrome-расширение: соцрейтинг свиноколеса для pointauc — заливает баллы из Google-таблицы в лоты",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node test/logic.test.mjs",
+    "icons": "node tools/make-icons.mjs"
+  },
+  "license": "MIT"
+}

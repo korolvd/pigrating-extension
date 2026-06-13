@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <title>PigRating</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <header>
+    <h1>PigRating — соцрейтинг свиноколеса</h1>
+  </header>
+
+  <details id="settings" class="card">
+    <summary>⚙️ Настройки</summary>
+    <label>Personal Token
+      <input id="token" type="password" placeholder="pointauc.com → Настройки → Personal Token" autocomplete="off" />
+    </label>
+    <label>Ссылка на Google-таблицу
+      <input id="sheetUrl" type="password" placeholder="https://docs.google.com/spreadsheets/d/.../edit#gid=0" autocomplete="off" />
+    </label>
+
+    <div class="row">
+      <label class="inline">1-я строка данных <input id="firstRow" class="mini" type="number" min="1" /></label>
+      <label class="inline">столбец ника <input id="nickCol" class="mini" type="text" placeholder="A" /></label>
+      <label class="inline">столбец баллов <input id="pointsCol" class="mini" type="text" placeholder="B" /></label>
+    </div>
+
+    <label>Префикс подписи инвестора
+      <input id="newLotPrefix" type="text" placeholder="[СОЦРЕЙТИНГ] " />
+    </label>
+
+    <div class="row">
+      <label class="inline"><input id="allowNegative" type="checkbox" /> разрешать минус</label>
+      <label class="inline"><input id="skipZero" type="checkbox" /> пропускать нули</label>
+    </div>
+    <button id="save" class="ghost">Сохранить настройки</button>
+  </details>
+
+  <div class="actions">
+    <button id="preview" class="primary">🔍 Предпросмотр</button>
+    <button id="apply" class="danger" disabled>🎰 Залить</button>
+  </div>
+
+  <div id="status" class="status"></div>
+  <div id="result" class="result"></div>
+
+  <footer>
+    <span id="lastApplied"></span>
+  </footer>
+
+  <script type="module" src="popup.js"></script>
+</body>
+</html>
