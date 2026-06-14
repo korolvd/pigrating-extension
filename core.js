@@ -13,6 +13,7 @@ export const DEFAULTS = {
   newLotPrefix: '[СОЦРЕЙТИНГ] ', // приставка к имени лота при выборе «новый лот» в окне
   allowNegative: true,
   skipZero: true,
+  asDonation: false,      // слать ставки как донат (isDonation: true) — применится конвертация аука
 };
 
 // ───────────────────────── Google Sheets ─────────────────────────
@@ -99,15 +100,27 @@ export async function postBids(token, bids) {
 
 // ───────────────────────── построение плана ─────────────────────────
 export const norm = (s) => (s || '').trim().toLowerCase();
-// Инвестор-метка нашего рейтинга — его имя начинается с приставки (его не считаем при матчинге).
+// Инвестор-метка рейтинга: "<префикс>ник:сумма" (сумма зашита в имя — для отката).
 const isMark = (inv, prefix) => { const p = norm(prefix); return !!p && norm(inv).startsWith(p); };
+export const markName = (prefix, nick, points) => `${prefix}${nick}:${points}`;
+// Разобрать метку → { nick, amount } | null. Понимает старый формат без ":сумма" (amount = NaN).
+export function parseMark(investor, prefix) {
+  const inv = (investor || '').trim();
+  const p = (prefix || '').trim();
+  if (!p || inv.toLowerCase().indexOf(p.toLowerCase()) !== 0) return null;
+  const rest = inv.slice(p.length).replace(/^\s+/, '');
+  const i = rest.lastIndexOf(':');
+  if (i < 0) return { nick: rest, amount: NaN };
+  const amount = parseInt(rest.slice(i + 1), 10);
+  return { nick: rest.slice(0, i).trim(), amount: Number.isFinite(amount) ? amount : NaN };
+}
 
 export function buildPlan(rows, lots, s) {
   const prefix = s.newLotPrefix || '';
   const effInvestors = (l) => (l.investors || []).filter((inv) => !isMark(inv, prefix)); // реальные вкладчики
 
   return rows.map((r) => {
-    const it = { nick: r.nick, points: r.points, rawPoints: r.rawPoints, investor: prefix + r.nick };
+    const it = { nick: r.nick, points: r.points, rawPoints: r.rawPoints, investor: markName(prefix, r.nick, r.points), isDonation: !!s.asDonation };
 
     if (!r.nick) return Object.assign(it, { action: 'skip', reason: 'пустой ник' });
     if (!Number.isFinite(r.points)) return Object.assign(it, { action: 'skip', reason: `не число: "${r.rawPoints}"` });
@@ -119,7 +132,7 @@ export function buildPlan(rows, lots, s) {
     const candidates = matched.map((l) => ({ id: l.id, fastId: l.fastId, name: l.name, amount: l.amount }));
 
     // уже залито: где-то есть инвестор-метка этого ника → предупреждаем, по умолчанию пропуск
-    const appliedLot = prefix ? lots.find((l) => (l.investors || []).some((inv) => norm(inv) === norm(it.investor))) : null;
+    const appliedLot = prefix ? lots.find((l) => (l.investors || []).some((inv) => { const m = parseMark(inv, prefix); return m && norm(m.nick) === norm(r.nick); })) : null;
     if (appliedLot) {
       return Object.assign(it, { action: 'resolve', applied: true, candidates, reason: `уже залито (от ${it.investor}) — выбери` });
     }
@@ -160,8 +173,8 @@ export function resolveChoice(it, choice, prefix = '', lotsById = {}) {
 export async function executePlan(token, plan, onProgress = () => {}) {
   const items = plan.filter((it) => it.action === 'update' || it.action === 'create');
   const bids = items.map((it) => it.action === 'update'
-    ? { cost: it.points, message: `#${it.fastId}`, investorId: it.investor, username: it.investor, insertStrategy: 'match', isDonation: false }
-    : { cost: it.points, message: it.target, investorId: it.investor, username: it.investor, insertStrategy: 'force', isDonation: false });
+    ? { cost: it.points, message: `#${it.fastId}`, investorId: it.investor, username: it.investor, insertStrategy: 'match', isDonation: !!it.isDonation }
+    : { cost: it.points, message: it.target, investorId: it.investor, username: it.investor, insertStrategy: 'force', isDonation: !!it.isDonation });
 
   if (bids.length) {
     try { await postBids(token, bids); items.forEach((it) => { it.status = 'ok'; }); }
@@ -170,4 +183,51 @@ export async function executePlan(token, plan, onProgress = () => {}) {
   onProgress(bids.length, bids.length);
   for (const it of plan) if (!it.status) it.status = 'skip';
   return plan;
+}
+
+// ───────────────────────── откат рейтинга ─────────────────────────
+export async function updateLot(token, id, lot) {
+  const res = await fetch(`${API_BASE}/lot`, { method: 'PUT', headers: headers(token), body: JSON.stringify({ query: { id }, lot }) });
+  if (!res.ok) throw new Error(`PUT /lot → HTTP ${res.status}`);
+}
+
+// Сканирует доску: каждая метка [префикс]ник:сумма → строка отката.
+export function buildRollbackPlan(lots, prefix) {
+  const items = [];
+  for (const l of lots) for (const inv of (l.investors || [])) {
+    const m = parseMark(inv, prefix);
+    if (!m) continue;
+    items.push({ lotId: l.id, fastId: l.fastId, lotName: l.name, investor: inv, nick: m.nick, amount: Number.isFinite(m.amount) ? m.amount : 0 });
+  }
+  return items;
+}
+
+// Группирует выбранные метки по лоту → один PUT на лот: абсолютная сумма (текущая − снятое) + investors без снятых меток.
+export function planRollbackPuts(items, lots) {
+  const byLot = new Map();
+  for (const it of items) { if (!byLot.has(it.lotId)) byLot.set(it.lotId, []); byLot.get(it.lotId).push(it); }
+  const puts = [];
+  for (const [lotId, its] of byLot) {
+    const lot = lots.find((l) => String(l.id) === String(lotId));
+    const remove = new Set(its.map((x) => norm(x.investor)));
+    const investors = (lot ? (lot.investors || []) : []).filter((inv) => !remove.has(norm(inv)));
+    const sum = its.reduce((s, x) => s + (Number.isFinite(x.amount) ? x.amount : 0), 0);
+    const cur = lot && Number.isFinite(lot.amount) ? lot.amount : 0;
+    puts.push({ lotId, lotName: lot ? lot.name : '', amount: cur - sum, investors, removed: its.length });
+  }
+  return puts;
+}
+
+// Выполняет откат: берёт свежие лоты, считает PUT'ы, применяет (параллельно).
+export async function executeRollback(token, items, onProgress = () => {}) {
+  if (!items.length) return [];
+  const lots = await getLots(token);
+  const puts = planRollbackPuts(items, lots);
+  let done = 0;
+  await Promise.all(puts.map(async (p) => {
+    try { await updateLot(token, p.lotId, { amount: p.amount, investors: p.investors }); p.status = 'ok'; }
+    catch (e) { p.status = 'error'; p.error = e.message; }
+    onProgress(++done, puts.length);
+  }));
+  return puts;
 }

@@ -48,6 +48,9 @@ input[type="text"], input[type="password"], input[type="number"], select {
 select { width: auto; }
 input.mini { width: 60px; margin-top: 0; }
 select.resolve { width: 100%; max-width: 240px; padding: 3px 6px; }
+button.undo { padding: 1px 8px; font-size: 13px; line-height: 1.3; background: transparent; border-color: var(--danger); color: var(--danger); font-weight: 700; }
+td.act { text-align: center; width: 30px; }
+input[type="checkbox"].rcb, #rallcb { width: 15px; height: 15px; }
 
 .actions { display: flex; gap: 8px; margin-bottom: 10px; }
 button {

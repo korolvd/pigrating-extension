@@ -32,13 +32,15 @@
     <div class="row">
       <label class="inline"><input id="allowNegative" type="checkbox" /> разрешать минус</label>
       <label class="inline"><input id="skipZero" type="checkbox" /> пропускать нули</label>
+      <label class="inline"><input id="asDonation" type="checkbox" /> как донат</label>
     </div>
     <button id="save" class="ghost">Сохранить настройки</button>
   </details>
 
   <div class="actions">
     <button id="preview" class="primary">🔍 Предпросмотр</button>
-    <button id="apply" class="danger" disabled>🎰 Залить</button>
+    <button id="apply" class="primary" disabled>🎰 Залить</button>
+    <button id="rollback" class="danger" disabled>↩ Откатить</button>
   </div>
 
   <div id="status" class="status"></div>
