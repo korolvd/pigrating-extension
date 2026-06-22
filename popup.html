@@ -21,6 +21,7 @@
     <symbol id="ic-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5l10 -10"/></symbol>
     <symbol id="ic-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6l-12 12"/><path d="M6 6l12 12"/></symbol>
     <symbol id="ic-help" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 17v.01"/><path d="M12 13.5a1.5 1.5 0 0 1 1 -1.5a2.6 2.6 0 1 0 -3 -4"/></symbol>
+    <symbol id="ic-bolt" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 3v7h6l-8 11v-7h-6l8 -11"/></symbol>
   </svg>
 
   <header>
@@ -45,7 +46,12 @@
   <div id="result" class="result"></div>
 
   <details id="pendingCard" class="card" open>
-    <summary><svg class="ic"><use href="#ic-hourglass"/></svg> На подтверждение (Twitch) <span id="pendingCount" class="badge"></span></summary>
+    <summary><svg class="ic"><use href="#ic-hourglass"/></svg> На подтверждение (Twitch) <span id="pendingCount" class="badge"></span>
+      <span class="sum-ctl" id="autoCtl" title="Авто-начисление: найденные ники начисляются сразу; ненайденные на Twitch — на ручное подтверждение.">
+        <svg class="ic" style="color:#f2c94c"><use href="#ic-bolt"/></svg>
+        <label class="switch"><input id="autoApprove" type="checkbox" /><span class="track"></span></label>
+      </span>
+    </summary>
     <div id="pendingBulk" class="row" style="gap:8px; margin:4px 0">
       <button id="confirmAll" class="ghost ok"><svg class="ic"><use href="#ic-check"/></svg> подтвердить все</button>
       <button id="rejectAll" class="ghost danger-text"><svg class="ic"><use href="#ic-x"/></svg> отклонить все</button>

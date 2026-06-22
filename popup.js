@@ -1,5 +1,5 @@
 import { DEFAULTS, fetchSheetRows, getLots, buildPlan, resolveChoice, buildRollbackPlan, parseSheetRef, buildAppsScript, healthCheck, normNick } from './core.js';
-import { connectTwitch, syncRewards, setRewardsEnabled, DEFAULT_TWITCH_CLIENT_ID } from './twitch.js';
+import { connectTwitch, syncRewards, setRewardsEnabled, deleteReward, DEFAULT_TWITCH_CLIENT_ID } from './twitch.js';
 
 let currentPlan = null;       // план залива (предпросмотр)
 let currentSettings = null;   // настройки на момент предпросмотра/отката
@@ -373,8 +373,11 @@ function renderTwitchPending(list) {
     const who = (buyer && buyer !== p.nick) ? `<span class="muted">@${escapeHtml(buyer)} →</span> ` : ''; // кто→кому
     const warn = p.nickExists === false ? ' <span class="neg" title="ник не найден на Twitch">⚠</span>' : '';
     const pts = `<span class="${p.points < 0 ? 'neg' : 'pos'}">${p.points > 0 ? '+' : ''}${p.points}</span>`;
+    const sug = p.suggestion && p.suggestion.nick
+      ? `<div style="margin-top:2px"><span class="muted">возможно:</span> <button class="psuggest" data-nick="${escapeHtml(p.suggestion.nick)}" title="начислить на ${escapeHtml(p.suggestion.nick)} вместо «${escapeHtml(p.nick || '')}»">к ${escapeHtml(p.suggestion.nick)}</button></div>`
+      : '';
     return `<div class="prow" data-id="${escapeHtml(p.redemptionId)}">
-      <span style="flex:1; min-width:0">${who}<b>${escapeHtml(p.nick || '—')}</b> ${pts}${warn} <span class="muted">${escapeHtml(p.rewardTitle || '')}</span></span>
+      <span style="flex:1; min-width:0">${who}<b>${escapeHtml(p.nick || '—')}</b> ${pts}${warn} <span class="muted">${escapeHtml(p.rewardTitle || '')}</span>${sug}</span>
       <button class="pconfirm ok" title="начислить" aria-label="начислить"><svg class="ic"><use href="#ic-check"/></svg></button>
       <button class="preject danger-text" title="вернуть баллы" aria-label="вернуть баллы"><svg class="ic"><use href="#ic-x"/></svg></button>
     </div>`;
@@ -387,9 +390,12 @@ function renderTwitchLog(log) {
   if (!rows.length) { el.innerHTML = '<div class="muted" style="font-size:11px">пока пусто</div>'; return; }
   el.innerHTML = rows.map((e) => {
     const t = new Date(e.at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+    const buyer = (e.buyer || '').toLowerCase();
+    const name = e.nick || buyer || '—';
+    const who = (buyer && buyer !== name) ? `<span class="muted">@${escapeHtml(buyer)} →</span> ` : ''; // покупатель → кому (для адресных)
     const pts = (e.points != null) ? `<span class="${e.points < 0 ? 'neg' : 'pos'}">${e.points > 0 ? '+' : ''}${e.points}</span>` : '';
     const note = e.note ? ` <span class="muted">${escapeHtml(e.note)}</span>` : '';
-    return `<div style="font-size:11px; padding:3px 0; border-bottom:1px solid var(--border)"><span class="dot" style="background:${e.ok ? '#27ae60' : '#eb5757'}"></span> <b>${escapeHtml(e.nick || '—')}</b> ${pts}${e.total != null ? ` → ${escapeHtml(String(e.total))}` : ''}<span class="muted" style="float:right">${t}</span>${note}</div>`;
+    return `<div style="font-size:11px; padding:3px 0; border-bottom:1px solid var(--border)"><span class="dot" style="background:${e.ok ? '#27ae60' : '#eb5757'}"></span> ${who}<b>${escapeHtml(name)}</b> ${pts}${e.total != null ? ` → ${escapeHtml(String(e.total))}` : ''}<span class="muted" style="float:right">${t}</span>${note}</div>`;
   }).join('');
 }
 
@@ -446,6 +452,7 @@ async function init() {
   $('buySameCol').checked = s.buySameCol; $('buyPointsCol').value = s.buyPointsCol; toggleBuyCol();
   renderRewardMap(s.rewardMap);
   $('rewardsActive').checked = s.twitchRewardsActive; syncRewardBar();
+  $('autoApprove').checked = s.twitchAutoApprove;
   $('twitchClientId').value = s.twitchClientId;
   $('twitchRedirect').textContent = chrome.identity.getRedirectURL();
   renderTwitchStatus(s);
@@ -475,18 +482,34 @@ async function init() {
   $('addReward').addEventListener('click', () => $('rewardMap').querySelector('tbody').insertAdjacentHTML('beforeend', rewardRowHtml()));
   $('rewardMap').addEventListener('input', () => { clearTimeout(rmapTimer); rmapTimer = setTimeout(saveRewardMap, 400); });
   $('rewardMap').addEventListener('change', saveRewardMap);
-  $('rewardMap').addEventListener('click', (e) => { const b = e.target.closest('.rm-del'); if (b) { b.closest('tr').remove(); saveRewardMap(); } });
+  $('rewardMap').addEventListener('click', async (e) => {
+    const b = e.target.closest('.rm-del'); if (!b) return;
+    const tr = b.closest('tr');
+    const rewardId = tr.dataset.id || '';
+    tr.remove();
+    await saveRewardMap();
+    if (!rewardId) return; // не была создана на Twitch — удалять нечего
+    const s = await loadSettings();
+    if (!s.twitchToken || !s.twitchUserId) return; // Twitch не подключён — осиротевшую зачистит ближайшее включение наград
+    const ctx = { clientId: s.twitchClientId || DEFAULT_TWITCH_CLIENT_ID, token: s.twitchToken, broadcasterId: s.twitchUserId };
+    try { await deleteReward(ctx, rewardId); setStatus('Награда удалена с Twitch.', 'ok'); }
+    catch (err) { if (err.status !== 404) setStatus(`Не удалось удалить награду с Twitch: ${err.message}`, 'error'); }
+  });
   $('twitchClientId').addEventListener('change', () => saveSettings({ twitchClientId: $('twitchClientId').value.trim() }));
   $('twitchConnect').addEventListener('click', onTwitchConnect);
   $('twitchDisconnect').addEventListener('click', onTwitchDisconnect);
   $('rewardsActive').addEventListener('change', onToggleRewards);
   $('twitchPending').addEventListener('click', (e) => {
     const row = e.target.closest('.prow'); if (!row) return;
+    const sug = e.target.closest('.psuggest');
+    if (sug) { chrome.runtime.sendMessage({ type: 'twitch-resolve', redemptionId: row.dataset.id, action: 'confirm', overrideNick: sug.dataset.nick }).catch(() => {}); return; }
     const action = e.target.closest('.pconfirm') ? 'confirm' : e.target.closest('.preject') ? 'reject' : null;
     if (action) chrome.runtime.sendMessage({ type: 'twitch-resolve', redemptionId: row.dataset.id, action }).catch(() => {});
   });
   $('confirmAll').addEventListener('click', () => chrome.runtime.sendMessage({ type: 'twitch-resolve-all', action: 'confirm' }).catch(() => {}));
   $('rejectAll').addEventListener('click', () => chrome.runtime.sendMessage({ type: 'twitch-resolve-all', action: 'reject' }).catch(() => {}));
+  $('autoApprove').addEventListener('change', async () => { await saveSettings({ twitchAutoApprove: $('autoApprove').checked }); renderTwitchPending((await loadSettings()).twitchPending); });
+  $('autoCtl').addEventListener('click', (e) => e.stopPropagation()); // клик по тумблеру в шапке не сворачивает карточку
   $('statusStrip').addEventListener('click', (e) => {                        // клик по чипу → открыть нужную секцию настроек
     const c = e.target.closest('.chip'); if (!c) return;
     $('settings').open = true;

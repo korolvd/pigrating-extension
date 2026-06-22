@@ -1,7 +1,7 @@
 // Фоновый service worker: выполняет заливку и откат независимо от popup.
 // Окно расширения можно закрыть — операция дойдёт до конца.
 
-import { executePlan, executeRollback, resolveRedemption, addPoints, normNick } from './core.js';
+import { executePlan, executeRollback, resolveRedemption, addPoints, normNick, fetchSheetRows, suggestNick } from './core.js';
 import { subscribeRedemptions, updateRedemptionStatus, redemptionEvent, userExists, DEFAULT_TWITCH_CLIENT_ID } from './twitch.js';
 
 let running = false;
@@ -10,7 +10,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg?.type === 'apply') { runApply(msg.plan).then(sendResponse).catch((e) => sendResponse({ error: e.message })); return true; }
   if (msg?.type === 'rollback') { runRollback(msg.items).then(sendResponse).catch((e) => sendResponse({ error: e.message })); return true; }
   if (msg?.type === 'twitch-reconnect') { paused = false; ensureListener(); sendResponse?.({ ok: true }); return; }
-  if (msg?.type === 'twitch-resolve') { resolvePending(msg.redemptionId, msg.action).then(() => sendResponse({ ok: true })).catch((e) => sendResponse({ error: e.message })); return true; }
+  if (msg?.type === 'twitch-resolve') { resolvePending(msg.redemptionId, msg.action, msg.overrideNick).then(() => sendResponse({ ok: true })).catch((e) => sendResponse({ error: e.message })); return true; }
   if (msg?.type === 'twitch-resolve-all') { resolveAllPending(msg.action).then(() => sendResponse({ ok: true })).catch((e) => sendResponse({ error: e.message })); return true; }
 });
 
@@ -161,6 +161,45 @@ async function handleWs(sock, msg) {
   }
 }
 
+// Обновить статус редемпшена на Twitch; вернуть текст ошибки или null (раньше ошибки глохли в .catch — возврат «молча» не срабатывал).
+async function setRedemption(ctx, rewardId, redemptionId, status) {
+  try { await updateRedemptionStatus(ctx, rewardId, redemptionId, status); return null; }
+  catch (e) { return e.message; }
+}
+
+// Кэш ростера (ники из таблицы) для подсказок похожих ников. SW может выгрузиться → перечитаем по TTL.
+let rosterCache = { at: 0, nicks: [] };
+async function getRoster(s) {
+  if (!s.sheetUrl) return []; // ростер читается из таблицы по ссылке
+  if (Date.now() - rosterCache.at < 60000 && rosterCache.nicks.length) return rosterCache.nicks;
+  try {
+    const rows = await fetchSheetRows(s.sheetUrl, s);
+    rosterCache = { at: Date.now(), nicks: rows.map((r) => r.nick).filter(Boolean) };
+  } catch { /* таблица недоступна — оставляем прошлый кэш (или пусто) */ }
+  return rosterCache.nicks;
+}
+
+// Начислить баллы + подтвердить (FULFILLED); при ошибке записи — вернуть баллы (CANCELED). Ошибки Twitch видны в логе.
+async function creditItem(s, ctx, item) {
+  let entry;
+  const corr = item.correctedFrom ? `исправлено: ${item.correctedFrom} → ${item.nick}` : '';
+  try { // в try только addPoints (бросает при ошибке записи); setRedemption свои ошибки не бросает
+    const r = await addPoints(s.webAppUrl, s.webAppSecret, item.nick, item.points);
+    const err = await setRedemption(ctx, item.rewardId, item.redemptionId, 'FULFILLED');
+    entry = { ok: true, nick: item.nick, buyer: item.userLogin, points: item.points, total: r && r.total, note: [corr, err ? `⚠ подтверждение Twitch не прошло: ${err}` : ''].filter(Boolean).join(' · ') };
+  } catch (e) {
+    const err = await setRedemption(ctx, item.rewardId, item.redemptionId, 'CANCELED');
+    entry = { ok: false, nick: item.nick, buyer: item.userLogin, points: item.points, note: `запись не удалась: ${e.message}` + (err ? ` · ⚠ возврат не прошёл: ${err}` : ' · баллы возвращены') };
+  }
+  await logEvent(entry); // вне try: сбой записи лога не должен триггерить ложный возврат
+}
+
+// Вернуть баллы зрителю (CANCELED) + лог; видно, если возврат не прошёл.
+async function refundItem(ctx, item, reason) {
+  const err = await setRedemption(ctx, item.rewardId, item.redemptionId, 'CANCELED');
+  await logEvent({ ok: false, nick: item.nick, buyer: item.userLogin, points: item.points, note: reason + (err ? ` · ⚠ возврат не прошёл: ${err}` : ' · баллы возвращены') });
+}
+
 async function onRedemption(eventPayload) {
   const ev = redemptionEvent(eventPayload);
   if (!ev.redemptionId || seen.has(ev.redemptionId)) return;
@@ -170,17 +209,36 @@ async function onRedemption(eventPayload) {
   const res = resolveRedemption(s.rewardMap, ev);
   if (!res) return; // награда не из нашего маппинга — игнор (напр. награда pointauc)
   const ctx = ctxFrom(s);
-  if (res.skip) { // обработать нельзя → вернуть баллы
-    await updateRedemptionStatus(ctx, ev.rewardId, ev.redemptionId, 'CANCELED').catch(() => {});
-    return logEvent({ ok: false, nick: ev.userLogin, note: res.skip });
+  const base = { redemptionId: ev.redemptionId, rewardId: ev.rewardId, rewardTitle: ev.rewardTitle, userLogin: ev.userLogin };
+  if (res.skip) return refundItem(ctx, { ...base, nick: ev.userLogin }, res.skip); // обработать нельзя → вернуть баллы
+  // Адресная покупка (ник ≠ самому редемптору). Себе/пустой ввод — всегда авто.
+  const isAddressed = res.target === 'input' && res.nick !== normNick(ev.userLogin);
+  let nickExists = null, suggestion = null, autoEligible = true;
+  if (isAddressed) {
+    const roster = await getRoster(s);
+    if (roster.length) {
+      if (roster.some((r) => normNick(r) === res.nick)) {
+        autoEligible = true; // точный участник таблицы → сразу
+      } else {
+        suggestion = suggestNick(res.nick, roster); // лучший похожий из таблицы или null
+        if (suggestion) { // есть похожий → вероятная опечатка, на ручную проверку
+          autoEligible = false;
+          try { nickExists = await userExists(ctx, res.nick); } catch { nickExists = null; }
+        } else {
+          autoEligible = true; // похожих нет → новый участник, начисляем без подтверждения
+        }
+      }
+    } else {
+      // ростер недоступен → деградация к прежнему поведению: гейт по наличию на Twitch
+      try { nickExists = await userExists(ctx, res.nick); } catch { nickExists = null; }
+      autoEligible = nickExists === true;
+    }
   }
-  // валидация ника: только для адресных (ник ≠ самому редемптору)
-  let nickExists = null;
-  if (res.nick !== normNick(ev.userLogin)) {
-    try { nickExists = await userExists(ctx, res.nick); } catch { nickExists = null; }
-  }
-  // в очередь на ручное подтверждение стримером (не начисляем сразу)
-  await addPending({ redemptionId: ev.redemptionId, rewardId: ev.rewardId, rewardTitle: ev.rewardTitle, nick: res.nick, points: res.points, userLogin: ev.userLogin, nickExists, at: Date.now() });
+  const item = { ...base, nick: res.nick, points: res.points, nickExists, suggestion, at: Date.now() };
+  // get(null) не мерджит DEFAULTS, поэтому отсутствие ключа = дефолт true.
+  const autoApprove = s.twitchAutoApprove !== false;
+  if (autoApprove && autoEligible) await creditItem(s, ctx, item);
+  else await addPending(item);
 }
 
 function addPending(item) {
@@ -207,7 +265,7 @@ function claimPending(redemptionId) {
 
 // Решение стримера: confirm → начислить + FULFILLED; reject → CANCELED (возврат баллов зрителю).
 // item убираем из очереди ДО начисления (at-most-once: при гибели SW безопаснее missed credit, чем двойной).
-async function resolvePending(redemptionId, action) {
+async function resolvePending(redemptionId, action, overrideNick) {
   if (processing.has(redemptionId)) return; // уже обрабатывается (двойной клик)
   processing.add(redemptionId);
   try {
@@ -216,18 +274,11 @@ async function resolvePending(redemptionId, action) {
     const s = await chrome.storage.local.get(null);
     const ctx = ctxFrom(s);
     if (action === 'confirm') {
-      try {
-        const r = await addPoints(s.webAppUrl, s.webAppSecret, item.nick, item.points);
-        await updateRedemptionStatus(ctx, item.rewardId, redemptionId, 'FULFILLED').catch(() => {});
-        await logEvent({ ok: true, nick: item.nick, points: item.points, total: r && r.total });
-      } catch (e) { // запись не удалась → вернуть баллы
-        await updateRedemptionStatus(ctx, item.rewardId, redemptionId, 'CANCELED').catch(() => {});
-        await logEvent({ ok: false, nick: item.nick, points: item.points, note: e.message });
-      }
-    } else { // reject
-      await updateRedemptionStatus(ctx, item.rewardId, redemptionId, 'CANCELED').catch(() => {});
-      await logEvent({ ok: false, nick: item.nick, points: item.points, note: 'отклонено стримером' });
-    }
+      const corrected = String(overrideNick || '').trim();
+      // стример выбрал похожий ник из таблицы → начисляем на него (исправление опечатки)
+      if (corrected && normNick(corrected) !== item.nick) await creditItem(s, ctx, { ...item, nick: corrected, correctedFrom: item.nick });
+      else await creditItem(s, ctx, item);
+    } else await refundItem(ctx, item, 'отклонено стримером');
   } finally { processing.delete(redemptionId); }
 }
 

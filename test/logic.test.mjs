@@ -1,7 +1,7 @@
 // Тесты чистой логики + батчинга. Логика импортируется из ../core.js.
 // Запуск: node test/logic.test.mjs
 
-import { parseCsv, colToIndex, buildPlan, executePlan, resolveChoice, markName, parseMark, buildRollbackPlan, planRollbackPuts, addPoints, buildAppsScript, healthCheck, resolveRedemption, normNick } from '../core.js';
+import { parseCsv, colToIndex, buildPlan, executePlan, resolveChoice, markName, parseMark, buildRollbackPlan, planRollbackPuts, addPoints, buildAppsScript, healthCheck, resolveRedemption, normNick, diceSimilarity, suggestNick } from '../core.js';
 import { validateToken, helix, createReward, syncRewards, setRewardsEnabled, subscribeRedemptions, updateRedemptionStatus, redemptionEvent, userExists } from '../twitch.js';
 
 let failed = 0;
@@ -213,7 +213,9 @@ eq('buildAppsScript: битый столбец ника → throw', baThrew, tru
 
 const scr3 = buildAppsScript({ sheetName: 'Лист1', nickCol: 'D', pointsCol: 'E', firstRow: 2, buySameCol: false, buyPointsCol: 'F2' }, 's');
 eq('buildAppsScript: мусор в buyPointsCol → откат на pointsCol=5', /const POINTS_COL\s*=\s*5;/.test(scr3), true);
-eq('buildAppsScript: безопасный аппенд ниже всех данных (не перезатирает футер)', /Math\.max\(last \+ 1, FIRST_ROW\)/.test(scr3), true);
+eq('buildAppsScript: новый ник — после последнего ника (lastNick+1)', /lastNick \+ 1/.test(scr3) && !/Math\.max\(last/.test(scr3), true);
+eq('buildAppsScript: матч ника без учёта регистра', /toLowerCase\(\) === nick\.toLowerCase\(\)/.test(scr3), true);
+eq('buildAppsScript: @ убирается при матче/записи ника', /replace\(\/\^@\+\//.test(scr3), true);
 eq('buildAppsScript: lock через tryLock → валидный JSON при контенции', /tryLock\(10000\)/.test(scr3) && !/waitLock/.test(scr3), true);
 
 // ───────── 6) resolveRedemption: маппинг наград Twitch → начисление ─────────
@@ -230,6 +232,15 @@ eq('resolve: незамапленная награда → null', resolveRedempt
 eq('resolve: пустой title не матчит пустой title строки', resolveRedemption([{ rewardTitle: '', points: 5, target: 'self' }], { rewardTitle: '', userLogin: 'x' }), null);
 eq('resolve: нулевые баллы → skip', !!resolveRedemption([{ rewardTitle: 'X', points: 0, target: 'self' }], { rewardTitle: 'X', userLogin: 'a' }).skip, true);
 eq('normNick: @ + регистр + пробелы', normNick('  @CoolGuy '), 'coolguy');
+
+// ───────── 6b) похожесть ников (Дайс по биграммам) для подсказок ─────────
+eq('dice: идентичные = 1', diceSimilarity('refirne', 'refirne'), 1);
+eq('dice: регистр игнорируется', diceSimilarity('ReFiRnE', 'refirne'), 1);
+eq('dice: пример xsalreen↔xalreenstream > 0.4', diceSimilarity('xsalreen', 'xalreenstream') > 0.4, true);
+eq('dice: совсем разные < 0.4', diceSimilarity('abcdef', 'zyxwvu') < 0.4, true);
+eq('suggest: лучший похожий из таблицы (исходный регистр)', suggestNick('xsalreen', ['vasya', 'XAlreenStream', 'petya']).nick, 'XAlreenStream');
+eq('suggest: точное совпадение не предлагается', suggestNick('vasya', ['Vasya', 'petya']), null);
+eq('suggest: нет похожих → null', suggestNick('qwerty', ['vasya', 'petya']), null);
 
 // ───────── 7) Twitch: validateToken + helix ─────────
 globalThis.fetch = async (url, opts = {}) => ({ ok: true, status: 200, json: async () => ({ client_id: 'cid', login: 'streamer', user_id: '123', scopes: ['channel:manage:redemptions'] }) });
@@ -259,16 +270,26 @@ const cr = await createReward({ clientId: 'c', token: 't', broadcasterId: 'b' },
 eq('createReward: POST + broadcaster_id + вернул id', { m: crReq.method, q: /broadcaster_id=b/.test(crReq.url), id: cr.id }, { m: 'POST', q: true, id: 'newid' });
 
 const scalls = [];
-globalThis.fetch = async (url, opts = {}) => { scalls.push({ method: opts.method }); return { ok: true, status: 200, text: async () => JSON.stringify({ data: [{ id: 'rid' + scalls.length }] }) }; };
+globalThis.fetch = async (url, opts = {}) => {
+  scalls.push({ method: opts.method });
+  if (opts.method === 'GET') return { ok: true, status: 200, text: async () => JSON.stringify({ data: [] }) }; // существующих наград нет
+  return { ok: true, status: 200, text: async () => JSON.stringify({ data: [{ id: opts.method === 'POST' ? 'ridNew' : 'ridUpd' }] }) };
+};
 const synced = await syncRewards({ clientId: 'c', token: 't', broadcasterId: 'b' }, [
   { rewardTitle: 'A', cost: 100, points: 50, target: 'self' },
   { rewardId: 'ex', rewardTitle: 'B', cost: 200, points: 10, target: 'input' },
 ]);
-eq('syncRewards: без id→POST, с id→PATCH', { m1: scalls[0].method, m2: scalls[1].method }, { m1: 'POST', m2: 'PATCH' });
-eq('syncRewards: rewardId записан + статусы ok', { id0: synced[0].rewardId, s0: synced[0].syncStatus, s1: synced[1].syncStatus }, { id0: 'rid1', s0: 'ok', s1: 'ok' });
+const loopM = scalls.map((c) => c.method).filter((m) => m === 'POST' || m === 'PATCH');
+eq('syncRewards: без id→POST, с id→PATCH', { m1: loopM[0], m2: loopM[1] }, { m1: 'POST', m2: 'PATCH' });
+eq('syncRewards: rewardId записан + статусы ok', { id0: synced[0].rewardId, s0: synced[0].syncStatus, s1: synced[1].syncStatus }, { id0: 'ridNew', s0: 'ok', s1: 'ok' });
 
-let sn = 0;
-globalThis.fetch = async () => { sn++; if (sn === 1) return { ok: false, status: 400, text: async () => JSON.stringify({ message: 'DUPLICATE' }) }; return { ok: true, status: 200, text: async () => JSON.stringify({ data: [{ id: 'ok2' }] }) }; };
+let dupPosts = 0;
+globalThis.fetch = async (url, opts = {}) => {
+  if (opts.method === 'GET') return { ok: true, status: 200, text: async () => JSON.stringify({ data: [] }) };
+  dupPosts++;
+  if (dupPosts === 1) return { ok: false, status: 400, text: async () => JSON.stringify({ message: 'DUPLICATE' }) };
+  return { ok: true, status: 200, text: async () => JSON.stringify({ data: [{ id: 'ok2' }] }) };
+};
 const synced2 = await syncRewards({ clientId: 'c', token: 't', broadcasterId: 'b' }, [
   { rewardTitle: 'dup', cost: 100, points: 1, target: 'self' },
   { rewardTitle: 'good', cost: 100, points: 1, target: 'self' },
@@ -278,7 +299,51 @@ eq('syncRewards: ошибка строки не валит остальные', 
 const smethods = [];
 globalThis.fetch = async (url, opts = {}) => { smethods.push(opts.method); if (opts.method === 'PATCH') return { ok: false, status: 404, text: async () => JSON.stringify({ message: 'not found' }) }; return { ok: true, status: 200, text: async () => JSON.stringify({ data: [{ id: 'recreated' }] }) }; };
 const synced3 = await syncRewards({ clientId: 'c', token: 't', broadcasterId: 'b' }, [{ rewardId: 'stale', rewardTitle: 'A', cost: 100, points: 5, target: 'self' }]);
-eq('syncRewards: 404 на update → пересоздание (PATCH→POST), новый id', { ok: synced3[0].syncStatus, id: synced3[0].rewardId, seq: smethods.join(',') }, { ok: 'ok', id: 'recreated', seq: 'PATCH,POST' });
+eq('syncRewards: 404 на update → пересоздание (PATCH→POST), новый id', { ok: synced3[0].syncStatus, id: synced3[0].rewardId, seq: smethods.join(',') }, { ok: 'ok', id: 'recreated', seq: 'GET,PATCH,POST' }); // GET — листинг (адопция/зачистка) перед циклом
+
+// зачистка осиротевших: наша награда, которой нет в маппинге (ни по id, ни по названию) → DELETE; награду из маппинга не трогаем
+const orphCalls = [];
+globalThis.fetch = async (url, opts = {}) => {
+  orphCalls.push({ method: opts.method, url });
+  if (opts.method === 'GET') return { ok: true, status: 200, text: async () => JSON.stringify({ data: [{ id: 'keep1', title: 'A' }, { id: 'orphan1', title: 'Z' }] }) };
+  return { ok: true, status: 200, text: async () => JSON.stringify({ data: [{ id: 'keep1' }] }) };
+};
+await syncRewards({ clientId: 'c', token: 't', broadcasterId: 'b' }, [{ rewardId: 'keep1', rewardTitle: 'A', cost: 100, points: 5, target: 'self' }]);
+eq('syncRewards: осиротевшую награду (нет в маппинге) удаляет', orphCalls.some((c) => c.method === 'DELETE' && /id=orphan1/.test(c.url)), true);
+eq('syncRewards: награду из маппинга НЕ удаляет', orphCalls.some((c) => c.method === 'DELETE' && /id=keep1/.test(c.url)), false);
+
+// адопция: строка без rewardId, но одноимённая награда уже на Twitch → переиспользуем (PATCH), без POST и без удаления
+const adoptCalls = [];
+globalThis.fetch = async (url, opts = {}) => {
+  adoptCalls.push({ method: opts.method, url });
+  if (opts.method === 'GET') return { ok: true, status: 200, text: async () => JSON.stringify({ data: [{ id: 'existed', title: 'Поднять рейтинг' }] }) };
+  return { ok: true, status: 200, text: async () => JSON.stringify({ data: [{ id: 'existed' }] }) };
+};
+const adopted = await syncRewards({ clientId: 'c', token: 't', broadcasterId: 'b' }, [{ rewardTitle: 'поднять РЕЙТИНГ', cost: 100, points: 5, target: 'self' }]);
+eq('syncRewards: адопция одноимённой (регистр игнор) — PATCH по id, без POST', { id: adopted[0].rewardId, patched: adoptCalls.some((c) => c.method === 'PATCH' && /id=existed/.test(c.url)), posted: adoptCalls.some((c) => c.method === 'POST') }, { id: 'existed', patched: true, posted: false });
+eq('syncRewards: адоптированную одноимённую не удаляет', adoptCalls.some((c) => c.method === 'DELETE'), false);
+
+// защита по названию: даже если sync строки упал, одноимённую награду (по названию) не сносим
+const protCalls = [];
+globalThis.fetch = async (url, opts = {}) => {
+  protCalls.push({ method: opts.method });
+  if (opts.method === 'GET') return { ok: true, status: 200, text: async () => JSON.stringify({ data: [{ id: 'exX', title: 'X' }] }) };
+  if (opts.method === 'PATCH') return { ok: false, status: 500, text: async () => JSON.stringify({ message: 'boom' }) };
+  return { ok: true, status: 200, text: async () => JSON.stringify({ data: [{ id: 'exX' }] }) };
+};
+const prot = await syncRewards({ clientId: 'c', token: 't', broadcasterId: 'b' }, [{ rewardTitle: 'X', cost: 100, points: 1, target: 'self' }]);
+eq('syncRewards: sync упал, но одноимённую (по названию) не удаляет', { s: prot[0].syncStatus, deleted: protCalls.some((c) => c.method === 'DELETE') }, { s: 'error', deleted: false });
+
+// протухший rewardId + одноимённая на Twitch → в ветке 404 адоптируем существующую (а не дубликат-эрор)
+const staleCalls = [];
+globalThis.fetch = async (url, opts = {}) => {
+  staleCalls.push({ method: opts.method, url });
+  if (opts.method === 'GET') return { ok: true, status: 200, text: async () => JSON.stringify({ data: [{ id: 'realA', title: 'A' }] }) };
+  if (opts.method === 'PATCH' && /id=stale/.test(url)) return { ok: false, status: 404, text: async () => JSON.stringify({ message: 'not found' }) };
+  return { ok: true, status: 200, text: async () => JSON.stringify({ data: [{ id: 'realA' }] }) };
+};
+const staleSync = await syncRewards({ clientId: 'c', token: 't', broadcasterId: 'b' }, [{ rewardId: 'stale', rewardTitle: 'A', cost: 100, points: 5, target: 'self' }]);
+eq('syncRewards: протухший id + одноимённая → адопция (PATCH realA), без POST', { ok: staleSync[0].syncStatus, id: staleSync[0].rewardId, posted: staleCalls.some((c) => c.method === 'POST') }, { ok: 'ok', id: 'realA', posted: false });
 
 const seCalls = [];
 globalThis.fetch = async (url, opts = {}) => { seCalls.push({ method: opts.method, body: opts.body ? JSON.parse(opts.body) : null }); return { ok: true, status: 200, text: async () => JSON.stringify({ data: [{ id: 'x' }] }) }; };

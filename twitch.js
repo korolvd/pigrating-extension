@@ -79,6 +79,10 @@ export async function updateReward(ctx, rewardId, body) {
 export function deleteReward(ctx, rewardId) {
   return helix('/channel_points/custom_rewards', { clientId: ctx.clientId, token: ctx.token, method: 'DELETE', query: { broadcaster_id: ctx.broadcasterId, id: rewardId } });
 }
+// Все награды, созданные нашим приложением на канале (для зачистки осиротевших).
+export function listRewards(ctx) {
+  return helix('/channel_points/custom_rewards', { clientId: ctx.clientId, token: ctx.token, query: { broadcaster_id: ctx.broadcasterId, only_manageable_rewards: true } });
+}
 
 // ── EventSub (редемпшены) + подтверждение ──
 // Подписка на редемпшены наград через WebSocket-транспорт (session_id из session_welcome).
@@ -133,16 +137,30 @@ export async function setRewardsEnabled(ctx, rows, enabled) {
   return out;
 }
 
+const titleKey = (t) => String(t || '').trim().toLowerCase();
+
 export async function syncRewards(ctx, rows) {
+  // Существующие награды нашего приложения — для переиспользования одноимённых (после переустановки/рассинхрона) и зачистки сирот.
+  let existing = [];
+  try { existing = (await listRewards(ctx)).data || []; } catch { /* список недоступен — без адопции и зачистки */ }
+  const idByTitle = new Map();
+  for (const rw of existing) idByTitle.set(titleKey(rw.title), rw.id);
+
   const out = [];
   for (const r of rows) {
     if (!r.rewardTitle) { out.push({ ...r, syncStatus: 'skip' }); continue; }
     try {
       const body = rewardBody(r);
+      const adopt = idByTitle.get(titleKey(r.rewardTitle)); // одноимённая на Twitch (для переиспользования вместо дубликата)
+      const id = r.rewardId || adopt || ''; // нет id, но одноимённая уже есть → переиспользуем
       let reward;
-      if (r.rewardId) {
-        try { reward = await updateReward(ctx, r.rewardId, body); }
-        catch (e) { if (e.status === 404) reward = await createReward(ctx, body); else throw e; } // награда удалена на Twitch → создаём заново
+      if (id) {
+        try { reward = await updateReward(ctx, id, body); }
+        catch (e) {
+          if (e.status !== 404) throw e;
+          // id протух (404): если на канале есть одноимённая — переиспользуем её, иначе создаём заново
+          reward = adopt && adopt !== id ? await updateReward(ctx, adopt, body) : await createReward(ctx, body);
+        }
       } else {
         reward = await createReward(ctx, body);
       }
@@ -151,5 +169,16 @@ export async function syncRewards(ctx, rows) {
       out.push({ ...r, syncStatus: 'error', syncError: e.message });
     }
   }
+  // Зачистка сирот: удалить наши награды, которых нет в маппинге ни по id, ни по названию.
+  // По названию — критично: иначе при ошибке create (дубликат) зачистка снесла бы существующую одноимённую награду.
+  try {
+    const keepId = new Set(), keepTitle = new Set();
+    for (const r of rows) { if (r.rewardId) keepId.add(r.rewardId); if (r.rewardTitle) keepTitle.add(titleKey(r.rewardTitle)); }
+    for (const r of out) if (r.rewardId) keepId.add(r.rewardId);
+    for (const rw of existing) {
+      if (keepId.has(rw.id) || keepTitle.has(titleKey(rw.title))) continue;
+      try { await deleteReward(ctx, rw.id); } catch { /* уже удалена — ок */ }
+    }
+  } catch { /* пропускаем зачистку */ }
   return out;
 }

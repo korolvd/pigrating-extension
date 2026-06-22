@@ -26,17 +26,20 @@ function doPost(e) {
     const b = JSON.parse(e.postData.contents);
     if (b.secret !== SECRET) return out({ ok: false, error: 'bad secret' });
     if (b.ping) { const ps = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAME); return out({ ok: true, sheet: SHEET_NAME, sheetFound: !!ps }); } // хелсчек без записи
-    const nick = String(b.nick || '').trim();
+    const nick = String(b.nick || '').trim().replace(/^@+/, ''); // убрать ведущий @
     const pts  = Number(b.points);
     if (!nick || !isFinite(pts)) return out({ ok: false, error: 'bad input' });
     const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAME);
     if (!sh) return out({ ok: false, error: 'sheet not found: ' + SHEET_NAME });
     const last = sh.getLastRow();
     const col = last >= FIRST_ROW ? sh.getRange(FIRST_ROW, NICK_COL, last - FIRST_ROW + 1, 1).getValues() : [];
-    let row = -1;
-    for (let i = 0; i < col.length; i++)
-      if (String(col[i][0]).trim().toLowerCase() === nick.toLowerCase()) { row = FIRST_ROW + i; break; }
-    if (row === -1) { row = Math.max(last + 1, FIRST_ROW); sh.getRange(row, NICK_COL).setValue(nick); sh.getRange(row, POINTS_COL).setValue(0); } // ниже всех данных — не перезатирает итог/футер
+    let row = -1, lastNick = FIRST_ROW - 1;
+    for (let i = 0; i < col.length; i++) {
+      const v = String(col[i][0]).trim();
+      if (v !== '') lastNick = FIRST_ROW + i;                  // последняя непустая ячейка столбца ника
+      if (v.replace(/^@+/, '').toLowerCase() === nick.toLowerCase()) { row = FIRST_ROW + i; break; } // матч без учёта регистра и ведущего @
+    }
+    if (row === -1) { row = lastNick + 1; sh.getRange(row, NICK_COL).setValue(nick); sh.getRange(row, POINTS_COL).setValue(0); } // новый ник — сразу после последнего ника
     const cell = sh.getRange(row, POINTS_COL);
     const total = (Number(cell.getValue()) || 0) + pts;
     cell.setValue(total);

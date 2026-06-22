@@ -21,6 +21,7 @@ export const DEFAULTS = {
   buyPointsCol: '',       // отдельный столбец для купленных баллов (когда buySameCol = false)
   rewardMap: [],          // награды Twitch → рейтинг: [{ rewardId, rewardTitle, cost, points, target:'self'|'input' }] (cost — цена в балах канала; расширение само создаёт награды)
   twitchRewardsActive: false, // мастер-переключатель: награды созданы и включены на Twitch
+  twitchAutoApprove: true,    // авто-начисление покупок (кроме ненайденных на Twitch ников — те на подтверждение)
   twitchClientId: '',     // Client ID Twitch-приложения стримера (dev.twitch.tv)
   twitchToken: '',        // user access token (implicit OAuth), скоуп channel:manage:redemptions
   twitchUserId: '',       // broadcaster user_id
@@ -175,6 +176,37 @@ export function resolveRedemption(map, ev) {
   return { nick, points, target: row.target === 'input' ? 'input' : 'self' };
 }
 
+// Сходство строк по коэффициенту Сёренсена–Дайса (биграммы): 2·|A∩B| / (|A|+|B|), 0..1.
+// Та же метрика, что в pointauc для «похожего лота» (там через либу string-similarity); реализация своя.
+export function diceSimilarity(a, b) {
+  a = String(a).toLowerCase().replace(/\s+/g, '');
+  b = String(b).toLowerCase().replace(/\s+/g, '');
+  if (a === b) return a ? 1 : 0;
+  if (a.length < 2 || b.length < 2) return 0;
+  const bigrams = (str) => {
+    const m = new Map();
+    for (let i = 0; i < str.length - 1; i++) { const g = str.slice(i, i + 2); m.set(g, (m.get(g) || 0) + 1); }
+    return m;
+  };
+  const A = bigrams(a), B = bigrams(b);
+  let inter = 0;
+  for (const [g, c] of A) if (B.has(g)) inter += Math.min(c, B.get(g));
+  return (2 * inter) / ((a.length - 1) + (b.length - 1));
+}
+
+// Лучший похожий ник из ростера таблицы (порог как в pointauc: > 0.4). nick — уже нормализованный (normNick).
+// roster — массив сырых ников из таблицы. Возвращает { nick: <сырой ник для показа/записи>, score } | null.
+export function suggestNick(nick, roster, threshold = 0.4) {
+  let best = null;
+  for (const raw of Array.isArray(roster) ? roster : []) {
+    const cand = normNick(raw);
+    if (!cand || cand === nick) continue;
+    const score = diceSimilarity(nick, cand);
+    if (score > threshold && (!best || score > best.score)) best = { nick: String(raw).trim(), score };
+  }
+  return best;
+}
+
 // Генерирует код Apps Script (doPost) с подставленными настройками + секретом.
 // Лист ищется по имени вкладки (sheetName, обязательно); столбцы/строка — из настроек; столбец баллов — pointsCol или отдельный buyPointsCol.
 export function buildAppsScript(s, secret) {
@@ -205,17 +237,20 @@ export function buildAppsScript(s, secret) {
     '    const b = JSON.parse(e.postData.contents);',
     "    if (b.secret !== SECRET) return out({ ok: false, error: 'bad secret' });",
     "    if (b.ping) { const ps = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAME); return out({ ok: true, sheet: SHEET_NAME, sheetFound: !!ps }); }", // хелсчек без записи
-    "    const nick = String(b.nick || '').trim();",
+    "    const nick = String(b.nick || '').trim().replace(/^@+/, '');", // убрать ведущий @
     '    const pts  = Number(b.points);',
     "    if (!nick || !isFinite(pts)) return out({ ok: false, error: 'bad input' });",
     '    const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAME);',
     "    if (!sh) return out({ ok: false, error: 'sheet not found: ' + SHEET_NAME });",
     '    const last = sh.getLastRow();',
     '    const col = last >= FIRST_ROW ? sh.getRange(FIRST_ROW, NICK_COL, last - FIRST_ROW + 1, 1).getValues() : [];',
-    '    let row = -1;',
-    '    for (let i = 0; i < col.length; i++)',
-    '      if (String(col[i][0]).trim().toLowerCase() === nick.toLowerCase()) { row = FIRST_ROW + i; break; }',
-    '    if (row === -1) { row = Math.max(last + 1, FIRST_ROW); sh.getRange(row, NICK_COL).setValue(nick); sh.getRange(row, POINTS_COL).setValue(0); }', // аппенд ниже всех данных — не перезатирает итог/футер
+    '    let row = -1, lastNick = FIRST_ROW - 1;',
+    '    for (let i = 0; i < col.length; i++) {',
+    '      const v = String(col[i][0]).trim();',
+    "      if (v !== '') lastNick = FIRST_ROW + i;",                  // последняя непустая ячейка СТОЛБЦА НИКА
+    "      if (v.replace(/^@+/, '').toLowerCase() === nick.toLowerCase()) { row = FIRST_ROW + i; break; }", // матч без учёта регистра и ведущего @
+    '    }',
+    '    if (row === -1) { row = lastNick + 1; sh.getRange(row, NICK_COL).setValue(nick); sh.getRange(row, POINTS_COL).setValue(0); }', // новый ник — сразу после последнего ника
     '    const cell = sh.getRange(row, POINTS_COL);',
     '    const total = (Number(cell.getValue()) || 0) + pts;',
     '    cell.setValue(total);',
