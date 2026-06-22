@@ -30,7 +30,20 @@ header h1 { font-size: 14px; margin: 0 0 10px; }
   padding: 10px;
   margin-bottom: 10px;
 }
-summary { cursor: pointer; font-weight: 600; }
+summary { cursor: pointer; font-weight: 600; list-style: none; position: relative; padding-right: 18px; }
+summary::-webkit-details-marker { display: none; }
+summary::after { content: ''; position: absolute; right: 3px; top: 50%; width: 6px; height: 6px; border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted); transform: translateY(-65%) rotate(-45deg); transition: transform .15s; }
+details[open] > summary::after { transform: translateY(-35%) rotate(45deg); }
+
+.ic { width: 1.05em; height: 1.05em; vertical-align: -.15em; flex: none; }
+
+.switch { position: relative; display: inline-block; width: 38px; height: 20px; cursor: pointer; flex: none; }
+.switch input { position: absolute; opacity: 0; width: 0; height: 0; }
+.switch .track { position: absolute; inset: 0; background: var(--border); border-radius: 10px; transition: background .15s; }
+.switch .track::before { content: ''; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: transform .15s; }
+.switch input:checked + .track { background: var(--ok); }
+.switch input:checked + .track::before { transform: translateX(18px); }
+button .ic, summary .ic { margin-right: 2px; }
 
 label { display: block; margin: 8px 0; color: var(--muted); }
 label.inline { display: inline-flex; align-items: center; gap: 6px; margin: 4px 12px 4px 0; }
@@ -64,12 +77,36 @@ button {
 }
 button:disabled { opacity: .5; cursor: not-allowed; }
 button.primary { background: var(--primary); border-color: var(--primary); }
+button.primary.armed { background: var(--warn); border-color: var(--warn); color: #1a1a1a; }
 button.danger { background: var(--danger); border-color: var(--danger); }
 button.ghost { background: transparent; }
 
 .status { min-height: 18px; margin-bottom: 8px; color: var(--muted); }
 .status.error { color: var(--danger); }
 .status.ok { color: var(--ok); }
+
+.health { font-size: 11px; min-height: 14px; margin: 2px 0 4px; cursor: pointer; color: var(--muted); }
+.health.ok { color: var(--ok); }
+.health.err { color: var(--danger); }
+.health.pending { color: var(--muted); }
+.saved-hint { color: var(--ok); opacity: 0; transition: opacity .2s; }
+.saved-hint.show { opacity: 1; }
+
+.strip-row { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.strip { display: flex; flex-wrap: wrap; gap: 6px; flex: 1; min-width: 0; }
+.reward-switch { display: inline-flex; align-items: center; gap: 6px; flex: none; }
+.reward-switch .ic { width: 16px; height: 16px; color: #a970ff; }
+.reward-switch.on .ic { color: var(--ok); }
+.chip { display: inline-flex; align-items: center; gap: 5px; background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 3px 9px; font-size: 11px; color: var(--text); cursor: pointer; }
+.chip:hover { border-color: var(--primary); }
+.dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #5f6470; vertical-align: middle; }
+
+.badge { display: none; background: var(--warn); color: #1a1a1a; border-radius: 10px; padding: 0 7px; font-size: 11px; font-weight: 700; }
+#pendingCard.has-items { border-color: var(--warn); }
+.prow { display: flex; align-items: center; gap: 8px; font-size: 11px; padding: 4px 0; border-top: 1px solid var(--border); }
+.prow button { padding: 2px 9px; font-size: 13px; line-height: 1.2; }
+button.ok { border-color: var(--ok); color: var(--ok); background: transparent; }
+button.danger-text { border-color: var(--danger); color: var(--danger); background: transparent; }
 
 table { width: 100%; border-collapse: collapse; font-size: 12px; }
 th, td { text-align: left; padding: 5px 6px; border-bottom: 1px solid var(--border); }

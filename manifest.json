@@ -1,7 +1,8 @@
 {
   "manifest_version": 3,
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA1jsYGCOnYJcvRBfAbihINPbUWUg+DWmhNxjHr3y9Q5Z+eVAKd9XQ+MKP0JQbKqZjloS8ORMWa4L7s9dJWs5DlTsza5U8fbkXBvxra4YdQcmrFC6Lr4xVs3slAz11fbo6T+j7mv6zjTVIxSjqTT2GlBhiiZmQ4ve+Aedkk/dNxOoYSrBc0egNEMpX8KOjDds7lYz4LIMcH+Eq4Up0mbM0n+mLHchFvJVZowvi7FzlkDQvRsf1T+A62U2q92z9uvSZFFcICKp7oYnhGYupOgYFKKrn3GdLUqIkK14nKpZQqYNPdUEDGpEuXjS8gAPcTIkdCIDGYxoiQCh291jvOtJ2eQIDAQAB",
   "name": "PigRating — соцрейтинг свиноколеса",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Соцрейтинг свиноколеса: перед прокрутом заливает баллы из Google-таблицы в лоты на pointauc.com через официальный API.",
   "action": {
     "default_popup": "popup.html",
@@ -13,10 +14,13 @@
     "service_worker": "background.js",
     "type": "module"
   },
-  "permissions": ["storage"],
+  "permissions": ["storage", "identity", "alarms"],
   "host_permissions": [
     "https://pointauc.com/*",
     "https://docs.google.com/*",
-    "https://*.googleusercontent.com/*"
+    "https://script.google.com/*",
+    "https://*.googleusercontent.com/*",
+    "https://api.twitch.tv/*",
+    "https://id.twitch.tv/*"
   ]
 }

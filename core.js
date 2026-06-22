@@ -14,6 +14,19 @@ export const DEFAULTS = {
   allowNegative: true,
   skipZero: true,
   asDonation: false,      // слать ставки как донат (isDonation: true) — применится конвертация аука
+  sheetName: '',          // имя вкладки для записи (необязательно): если задано — скрипт ищет лист по имени, иначе по gid из ссылки
+  webAppUrl: '',          // Apps Script Web App для записи баллов (покупка рейтинга за балы канала)
+  webAppSecret: '',       // секрет веб-аппа (тот же, что в скрипте); генерится кнопкой «Скопировать скрипт»
+  buySameCol: true,       // балы покупок — в тот же столбец, что pointsCol
+  buyPointsCol: '',       // отдельный столбец для купленных баллов (когда buySameCol = false)
+  rewardMap: [],          // награды Twitch → рейтинг: [{ rewardId, rewardTitle, cost, points, target:'self'|'input' }] (cost — цена в балах канала; расширение само создаёт награды)
+  twitchRewardsActive: false, // мастер-переключатель: награды созданы и включены на Twitch
+  twitchClientId: '',     // Client ID Twitch-приложения стримера (dev.twitch.tv)
+  twitchToken: '',        // user access token (implicit OAuth), скоуп channel:manage:redemptions
+  twitchUserId: '',       // broadcaster user_id
+  twitchLogin: '',        // логин подключённого канала
+  twitchLog: [],          // лог последних начислений за балы канала (пишет background)
+  twitchPending: [],      // редемпшены на ручное подтверждение стримером (пишет background)
 };
 
 // ───────────────────────── Google Sheets ─────────────────────────
@@ -96,6 +109,123 @@ export async function postBids(token, bids) {
   const res = await fetch(`${API_BASE}/bids`, { method: 'POST', headers: headers(token), body: JSON.stringify({ bids }) });
   if (!res.ok) throw new Error(`POST /bids → HTTP ${res.status}`);
   return res.json();
+}
+
+// Начислить балы нику через Apps Script Web App (покупка рейтинга). Возвращает { ok, nick, total }.
+// text/plain — чтобы не словить CORS-preflight; ответ читаем благодаря host_permissions на script(.googleusercontent).com.
+export async function addPoints(url, secret, nick, points) {
+  if (!url) throw new Error('Не задан URL веб-аппа (Apps Script).');
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify({ secret, nick, points }),
+    redirect: 'follow',
+  });
+  if (!res.ok) throw new Error(`Веб-апп → HTTP ${res.status}`);
+  const text = await res.text();
+  let data;
+  try { data = JSON.parse(text); } // не-JSON (страница логина/«нет доступа») = неправильный деплой
+  catch { throw new Error('Веб-апп вернул не JSON. Проверь деплой: Execute as Me, Who has access Anyone, и что URL заканчивается на /exec.'); }
+  if (data.ok === false) throw new Error(`Веб-апп: ${data.error || 'ошибка'}`);
+  if (typeof data.ok === 'undefined') throw new Error('Неожиданный ответ веб-аппа.');
+  return data;
+}
+
+// Проверка веб-аппа тем же POST-путём, что и запись (без записи в лист): доступность, корректный деплой (JSON, а не HTML), секрет, наличие листа.
+export async function healthCheck(url, secret) {
+  if (!url) throw new Error('Не задан URL веб-аппа.');
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify({ secret, ping: true }),
+    redirect: 'follow',
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const text = await res.text();
+  let data;
+  try { data = JSON.parse(text); }
+  catch { throw new Error('ответ не JSON — задеплой как Web app: Execute as Me, Who has access Anyone, URL …/exec'); }
+  if (data.ok === false) {
+    if (data.error === 'bad secret') throw new Error('неверный секрет');
+    if (data.error === 'bad input') throw new Error('старый скрипт — пересними кнопкой и задеплой заново (New deployment)');
+    throw new Error(data.error || 'ошибка');
+  }
+  if (data.sheetFound === false) throw new Error(`лист «${data.sheet}» не найден`);
+  return data;
+}
+
+// ───────────────────────── Twitch: маппинг наград → рейтинг ─────────────────────────
+// ник из ввода зрителя: убрать ведущий @, пробелы, нижний регистр (логин Twitch — регистронезависим)
+export function normNick(s) { return String(s || '').trim().replace(/^@+/, '').trim().toLowerCase(); }
+
+// По событию редемпшена и маппингу определить начисление.
+// ev: { rewardId, rewardTitle, userLogin, userInput }
+// → { nick, points, target } | { skip: '<причина>' } | null (награда не замаплена — игнор)
+export function resolveRedemption(map, ev) {
+  const rows = Array.isArray(map) ? map : [];
+  const evTitle = String(ev.rewardTitle || '').trim().toLowerCase();
+  const row = rows.find((r) => r.rewardId && r.rewardId === ev.rewardId)
+    || rows.find((r) => !r.rewardId && evTitle !== '' && String(r.rewardTitle || '').trim().toLowerCase() === evTitle);
+  if (!row) return null;
+  const points = parseInt(row.points, 10);
+  if (!Number.isFinite(points) || points === 0) return { skip: 'нулевые/нечисловые баллы' };
+  const self = normNick(ev.userLogin);
+  const nick = row.target === 'input' ? (normNick(ev.userInput) || self) : self; // пустой ввод → начисление себе
+  if (!nick) return { skip: 'нет ника' };
+  return { nick, points, target: row.target === 'input' ? 'input' : 'self' };
+}
+
+// Генерирует код Apps Script (doPost) с подставленными настройками + секретом.
+// Лист ищется по имени вкладки (sheetName, обязательно); столбцы/строка — из настроек; столбец баллов — pointsCol или отдельный buyPointsCol.
+export function buildAppsScript(s, secret) {
+  const sheetName = (s.sheetName || '').trim();
+  if (!sheetName) throw new Error('Укажи имя листа (вкладки) в настройках.');
+  const nickIdx = colToIndex(s.nickCol);
+  let ptsIdx = colToIndex((s.buySameCol === false && s.buyPointsCol) ? s.buyPointsCol : s.pointsCol);
+  if (ptsIdx < 0) ptsIdx = colToIndex(s.pointsCol); // невалидный столбец покупок → откат на основной
+  if (nickIdx < 0 || ptsIdx < 0) throw new Error('Неверно указан столбец ника/баллов (нужно A, B, … или номер).');
+  const nickCol = nickIdx + 1;
+  const ptsCol = ptsIdx + 1;
+  const firstRow = Math.max(1, parseInt(s.firstRow, 10) || 2);
+  return [
+    '/**',
+    ' * PigRating — приём начислений рейтинга (сгенерировано расширением).',
+    ' * Deploy → New deployment → Web app: Execute as Me, Who has access Anyone → скопируй URL в расширение.',
+    ' */',
+    `const SECRET     = ${JSON.stringify(secret)};`,
+    `const SHEET_NAME = ${JSON.stringify(sheetName)};`,
+    `const NICK_COL   = ${nickCol};`,
+    `const POINTS_COL = ${ptsCol};`,
+    `const FIRST_ROW  = ${firstRow};`,
+    '',
+    'function doPost(e) {',
+    '  const lock = LockService.getScriptLock();',
+    "  if (!lock.tryLock(10000)) return out({ ok: false, error: 'busy, повтори' });",
+    '  try {',
+    '    const b = JSON.parse(e.postData.contents);',
+    "    if (b.secret !== SECRET) return out({ ok: false, error: 'bad secret' });",
+    "    if (b.ping) { const ps = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAME); return out({ ok: true, sheet: SHEET_NAME, sheetFound: !!ps }); }", // хелсчек без записи
+    "    const nick = String(b.nick || '').trim();",
+    '    const pts  = Number(b.points);',
+    "    if (!nick || !isFinite(pts)) return out({ ok: false, error: 'bad input' });",
+    '    const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAME);',
+    "    if (!sh) return out({ ok: false, error: 'sheet not found: ' + SHEET_NAME });",
+    '    const last = sh.getLastRow();',
+    '    const col = last >= FIRST_ROW ? sh.getRange(FIRST_ROW, NICK_COL, last - FIRST_ROW + 1, 1).getValues() : [];',
+    '    let row = -1;',
+    '    for (let i = 0; i < col.length; i++)',
+    '      if (String(col[i][0]).trim().toLowerCase() === nick.toLowerCase()) { row = FIRST_ROW + i; break; }',
+    '    if (row === -1) { row = Math.max(last + 1, FIRST_ROW); sh.getRange(row, NICK_COL).setValue(nick); sh.getRange(row, POINTS_COL).setValue(0); }', // аппенд ниже всех данных — не перезатирает итог/футер
+    '    const cell = sh.getRange(row, POINTS_COL);',
+    '    const total = (Number(cell.getValue()) || 0) + pts;',
+    '    cell.setValue(total);',
+    '    return out({ ok: true, nick: nick, total: total });',
+    '  } catch (err) { return out({ ok: false, error: String(err) }); }',
+    '  finally { lock.releaseLock(); }',
+    '}',
+    'function out(o) { return ContentService.createTextOutput(JSON.stringify(o)).setMimeType(ContentService.MimeType.JSON); }',
+    '',
+  ].join('\n');
 }
 
 // ───────────────────────── построение плана ─────────────────────────

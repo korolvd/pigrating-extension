@@ -6,45 +6,139 @@
   <link rel="stylesheet" href="popup.css" />
 </head>
 <body>
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <symbol id="ic-search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="7"/><path d="M21 21l-6 -6"/></symbol>
+    <symbol id="ic-apply" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v10"/><path d="M8 10l4 4l4 -4"/><path d="M4 20h16"/></symbol>
+    <symbol id="ic-rollback" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 14l-4 -4l4 -4"/><path d="M5 10h11a4 4 0 1 1 0 8h-1"/></symbol>
+    <symbol id="ic-hourglass" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6.5 7h11"/><path d="M6.5 17h11"/><path d="M6 20v-2a6 6 0 1 1 12 0v2a1 1 0 0 1 -1 1h-10a1 1 0 0 1 -1 -1z"/><path d="M6 4v2a6 6 0 1 0 12 0v-2a1 1 0 0 0 -1 -1h-10a1 1 0 0 0 -1 1z"/></symbol>
+    <symbol id="ic-receipt" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 21v-16a2 2 0 0 1 2 -2h10a2 2 0 0 1 2 2v16l-3 -2l-2 2l-2 -2l-2 2l-2 -2l-3 2"/><path d="M9 7h6"/><path d="M9 11h6"/></symbol>
+    <symbol id="ic-settings" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.325 4.317c.426 -1.756 2.924 -1.756 3.35 0a1.724 1.724 0 0 0 2.573 1.066c1.543 -.94 3.31 .826 2.37 2.37a1.724 1.724 0 0 0 1.065 2.572c1.756 .426 1.756 2.924 0 3.35a1.724 1.724 0 0 0 -1.066 2.573c.94 1.543 -.826 3.31 -2.37 2.37a1.724 1.724 0 0 0 -2.572 1.065c-.426 1.756 -2.924 1.756 -3.35 0a1.724 1.724 0 0 0 -2.573 -1.066c-1.543 .94 -3.31 -.826 -2.37 -2.37a1.724 1.724 0 0 0 -1.065 -2.572c-1.756 -.426 -1.756 -2.924 0 -3.35a1.724 1.724 0 0 0 1.066 -2.573c-.94 -1.543 .826 -3.31 2.37 -2.37c1 .608 2.296 .07 2.572 -1.065z"/><circle cx="12" cy="12" r="3"/></symbol>
+    <symbol id="ic-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8v-2a2 2 0 0 0 -2 -2h-8a2 2 0 0 0 -2 2v8a2 2 0 0 0 2 2h2"/></symbol>
+    <symbol id="ic-twitch" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5v11a1 1 0 0 0 1 1h2v4l4 -4h5.584c.266 0 .52 -.105 .707 -.293l2.415 -2.414c.187 -.188 .293 -.442 .293 -.708v-8.585a1 1 0 0 0 -1 -1h-15a1 1 0 0 0 -1 1z"/><path d="M16 8v4"/><path d="M12 8v4"/></symbol>
+    <symbol id="ic-gift" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="8" width="18" height="4" rx="1"/><path d="M12 8v13"/><path d="M19 12v7a2 2 0 0 1 -2 2h-10a2 2 0 0 1 -2 -2v-7"/><path d="M7.5 8a2.5 2.5 0 0 1 0 -5a4.8 8 0 0 1 4.5 5a4.8 8 0 0 1 4.5 -5a2.5 2.5 0 0 1 0 5"/></symbol>
+    <symbol id="ic-target" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/></symbol>
+    <symbol id="ic-table" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16a1 1 0 0 1 1 1v14a1 1 0 0 1 -1 1h-16a1 1 0 0 1 -1 -1v-14a1 1 0 0 1 1 -1z"/><path d="M3 10h18"/><path d="M10 3v18"/></symbol>
+    <symbol id="ic-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5l10 -10"/></symbol>
+    <symbol id="ic-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6l-12 12"/><path d="M6 6l12 12"/></symbol>
+    <symbol id="ic-help" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 17v.01"/><path d="M12 13.5a1.5 1.5 0 0 1 1 -1.5a2.6 2.6 0 1 0 -3 -4"/></symbol>
+  </svg>
+
   <header>
-    <h1>PigRating — соцрейтинг свиноколеса</h1>
+    <h1>🐷 PigRating — соцрейтинг свиноколеса</h1>
   </header>
 
-  <details id="settings" class="card">
-    <summary>⚙️ Настройки</summary>
-    <label>Personal Token
-      <input id="token" type="password" placeholder="pointauc.com → Настройки → Personal Token" autocomplete="off" />
-    </label>
-    <label>Ссылка на Google-таблицу
-      <input id="sheetUrl" type="password" placeholder="https://docs.google.com/spreadsheets/d/.../edit#gid=0" autocomplete="off" />
-    </label>
-
-    <div class="row">
-      <label class="inline">1-я строка данных <input id="firstRow" class="mini" type="number" min="1" /></label>
-      <label class="inline">столбец ника <input id="nickCol" class="mini" type="text" placeholder="A" /></label>
-      <label class="inline">столбец баллов <input id="pointsCol" class="mini" type="text" placeholder="B" /></label>
-    </div>
-
-    <label>Префикс подписи инвестора
-      <input id="newLotPrefix" type="text" placeholder="[СОЦРЕЙТИНГ] " />
-    </label>
-
-    <div class="row">
-      <label class="inline"><input id="allowNegative" type="checkbox" /> разрешать минус</label>
-      <label class="inline"><input id="skipZero" type="checkbox" /> пропускать нули</label>
-      <label class="inline"><input id="asDonation" type="checkbox" /> как донат</label>
-    </div>
-    <button id="save" class="ghost">Сохранить настройки</button>
-  </details>
+  <div class="strip-row">
+    <div id="statusStrip" class="strip"></div>
+    <span class="reward-switch" id="rewardSwitch" title="Награды за балы канала — вкл/выкл. Вкл создаёт/включает награды на Twitch (зрители могут покупать). Поменял награды → выключи и включи.">
+      <svg class="ic"><use href="#ic-gift"/></svg>
+      <label class="switch"><input id="rewardsActive" type="checkbox" /><span class="track"></span></label>
+    </span>
+  </div>
 
   <div class="actions">
-    <button id="preview" class="primary">🔍 Предпросмотр</button>
-    <button id="apply" class="primary" disabled>🎰 Залить</button>
-    <button id="rollback" class="danger" disabled>↩ Откатить</button>
+    <button id="preview" class="primary"><svg class="ic"><use href="#ic-search"/></svg> Предпросмотр</button>
+    <button id="apply" class="primary" disabled><svg class="ic"><use href="#ic-apply"/></svg> <span class="btn-label">Применить</span></button>
+    <button id="rollback" class="danger" disabled><svg class="ic"><use href="#ic-rollback"/></svg> <span class="btn-label">Откатить</span></button>
   </div>
 
   <div id="status" class="status"></div>
   <div id="result" class="result"></div>
+
+  <details id="pendingCard" class="card" open>
+    <summary><svg class="ic"><use href="#ic-hourglass"/></svg> На подтверждение (Twitch) <span id="pendingCount" class="badge"></span></summary>
+    <div id="pendingBulk" class="row" style="gap:8px; margin:4px 0">
+      <button id="confirmAll" class="ghost ok"><svg class="ic"><use href="#ic-check"/></svg> подтвердить все</button>
+      <button id="rejectAll" class="ghost danger-text"><svg class="ic"><use href="#ic-x"/></svg> отклонить все</button>
+    </div>
+    <div id="twitchPending"></div>
+  </details>
+
+  <details class="card">
+    <summary><svg class="ic"><use href="#ic-receipt"/></svg> Последние начисления (Twitch)</summary>
+    <div id="twitchLog"></div>
+  </details>
+
+  <details id="settings" class="card">
+    <summary><svg class="ic"><use href="#ic-settings"/></svg> Настройки <span class="muted" style="font-weight:400; font-size:11px">pointauc · таблица · Twitch · награды</span></summary>
+    <details class="card">
+      <summary><svg class="ic"><use href="#ic-target"/></svg> pointauc</summary>
+      <label>Personal Token
+        <input id="token" type="password" placeholder="pointauc.com → Настройки → Personal Token" autocomplete="off" />
+      </label>
+      <label>Префикс подписи инвестора
+        <input id="newLotPrefix" type="text" placeholder="[СОЦРЕЙТИНГ] " />
+      </label>
+      <div class="row">
+        <label class="inline"><input id="allowNegative" type="checkbox" /> разрешать минус</label>
+        <label class="inline"><input id="skipZero" type="checkbox" /> пропускать нули</label>
+        <label class="inline"><input id="asDonation" type="checkbox" /> как донат</label>
+      </div>
+    </details>
+
+    <details class="card">
+      <summary><svg class="ic"><use href="#ic-table"/></svg> Google-таблица</summary>
+      <label>Ссылка на таблицу
+        <input id="sheetUrl" type="password" placeholder="https://docs.google.com/spreadsheets/d/.../edit#gid=0" autocomplete="off" />
+      </label>
+      <label>Имя листа (вкладки)
+        <input id="sheetName" type="text" placeholder="напр. Лист1" autocomplete="off" />
+      </label>
+      <div class="row">
+        <label class="inline">1-я строка данных <input id="firstRow" class="mini" type="number" min="1" /></label>
+        <label class="inline">столбец ника <input id="nickCol" class="mini" type="text" placeholder="A" /></label>
+        <label class="inline">столбец баллов <input id="pointsCol" class="mini" type="text" placeholder="B" /></label>
+      </div>
+
+      <div class="muted" style="font-size:11px; margin:10px 0 2px">Запись в таблицу (покупка рейтинга за балы канала) — через Apps Script:</div>
+      <div class="row" style="gap:8px">
+        <button id="copyScript" class="ghost"><svg class="ic"><use href="#ic-copy"/></svg> Скопировать скрипт (Apps Script)</button>
+        <button id="howto" class="ghost"><svg class="ic"><use href="#ic-help"/></svg> Как установить?</button>
+      </div>
+      <label>URL веб-аппа
+        <input id="webAppUrl" type="text" placeholder="вставь после деплоя: …/exec" autocomplete="off" />
+      </label>
+      <div id="webAppHealth" class="health" title="нажми, чтобы перепроверить"></div>
+      <label>Секрет веб-аппа (генерится автоматически)
+        <input id="webAppSecret" type="password" placeholder="появится после «Скопировать скрипт»" autocomplete="off" />
+      </label>
+      <div class="row">
+        <label class="inline"><input id="buySameCol" type="checkbox" /> балы покупок — в тот же столбец</label>
+        <label class="inline" id="buyColWrap">столбец покупок <input id="buyPointsCol" class="mini" type="text" placeholder="F" /> <span class="muted" style="font-size:10px">(в залив не идёт — сливай вручную)</span></label>
+      </div>
+    </details>
+
+    <details class="card">
+      <summary><svg class="ic"><use href="#ic-twitch"/></svg> Twitch</summary>
+      <label>Twitch Client ID <span class="muted" style="font-size:10px">(необязательно — встроено)</span>
+        <input id="twitchClientId" type="text" placeholder="оставь пустым — используется встроенное приложение" autocomplete="off" />
+      </label>
+      <div class="muted" style="font-size:11px; margin:2px 0">
+        Redirect URL для приложения (впиши в OAuth Redirect URLs): <code id="twitchRedirect">—</code>
+      </div>
+      <div class="row" style="gap:8px; align-items:center; margin-top:4px">
+        <button id="twitchConnect" class="ghost">Подключить Twitch</button>
+        <button id="twitchDisconnect" class="ghost" hidden>Отключить</button>
+        <span id="twitchStatus" class="health"></span>
+      </div>
+    </details>
+
+    <details class="card">
+      <summary><svg class="ic"><use href="#ic-gift"/></svg> Награды Twitch → рейтинг</summary>
+      <div class="muted" style="font-size:11px; margin:4px 0">
+        Расширение создаст эти награды на твоём канале (после подключения Twitch). <b>цена</b> — в балах канала; <b>рейтинг</b> — сколько добавить (можно минус). «кому»: <b>себе</b> — зрителю, <b>ник из ввода</b> — нику из поля награды (подарок/диверсия); если поле не заполнено — начисляется самому зрителю.
+      </div>
+      <table id="rewardMap">
+        <thead><tr><th>награда</th><th>цена</th><th>рейтинг</th><th>кому</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <div class="row" style="gap:8px; margin-top:6px">
+        <button id="addReward" class="ghost">+ добавить награду</button>
+      </div>
+      <div class="muted" style="font-size:10px; margin-top:4px">Включаются/выключаются тумблером «Награды за балы канала» наверху. Поменял награды? Выключи и включи, чтобы применить.</div>
+    </details>
+
+    <div class="muted" style="font-size:11px; margin-top:6px">Настройки сохраняются автоматически. <span id="savedHint" class="saved-hint">✓ сохранено</span></div>
+  </details>
 
   <footer>
     <span id="lastApplied"></span>

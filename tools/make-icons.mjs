@@ -1,4 +1,4 @@
-// Генератор иконок расширения без зависимостей: рисует свинку и кодирует PNG (zlib).
+// Генератор иконок расширения без зависимостей: рисует пятачок в цветном колесе и кодирует PNG (zlib).
 // Запуск: node tools/make-icons.mjs  → icons/icon16.png, icon48.png, icon128.png
 import zlib from 'node:zlib';
 import { writeFileSync, mkdirSync } from 'node:fs';
@@ -27,27 +27,23 @@ function encodePNG(size, rgba) {
 }
 
 // ── геометрия в нормированных координатах [0..1] ──
-const inRoundRect = (u, v, rad) => { const x = Math.min(u, 1 - u), y = Math.min(v, 1 - v); if (x >= rad || y >= rad) return true; const dx = rad - x, dy = rad - y; return dx * dx + dy * dy <= rad * rad; };
 const inEllipse = (u, v, cx, cy, rx, ry) => { const a = (u - cx) / rx, b = (v - cy) / ry; return a * a + b * b <= 1; };
-const inTri = (u, v, ax, ay, bx, by, cx, cy) => {
-  const d1 = (u - bx) * (ay - by) - (ax - bx) * (v - by);
-  const d2 = (u - cx) * (by - cy) - (bx - cx) * (v - cy);
-  const d3 = (u - ax) * (cy - ay) - (cx - ax) * (v - ay);
-  const neg = d1 < 0 || d2 < 0 || d3 < 0, pos = d1 > 0 || d2 > 0 || d3 > 0;
-  return !(neg && pos);
-};
 
-const C = { blue: [47, 128, 237], ear: [236, 122, 170], head: [255, 168, 200], snout: [240, 130, 176], nostril: [120, 50, 80], eye: [60, 30, 46] };
+// палитра «радуга» (8 секторов колеса) + пятачок
+const WHEEL = [[235, 87, 87], [242, 153, 74], [242, 201, 76], [39, 174, 96], [45, 156, 219], [47, 128, 237], [155, 81, 224], [237, 110, 160]];
+const C = { white: [255, 255, 255], head: [244, 166, 192], snout: [239, 143, 179], nostril: [122, 50, 80], eye: [58, 32, 48] };
 
-// цвет пикселя (верхний слой побеждает); null — прозрачный
+// цвет пикселя (верхний слой побеждает); null — прозрачный. Сплошное цветное колесо + пятачок в центре.
 function colorAt(u, v) {
-  if (!inRoundRect(u, v, 0.18)) return null;
-  let col = C.blue;
-  if (inTri(u, v, 0.20, 0.36, 0.33, 0.06, 0.47, 0.34) || inTri(u, v, 0.80, 0.36, 0.67, 0.06, 0.53, 0.34)) col = C.ear;
-  if (inEllipse(u, v, 0.5, 0.55, 0.38, 0.40)) col = C.head;
-  if (inEllipse(u, v, 0.5, 0.66, 0.19, 0.145)) col = C.snout;
-  if (inEllipse(u, v, 0.43, 0.66, 0.035, 0.06) || inEllipse(u, v, 0.57, 0.66, 0.035, 0.06)) col = C.nostril;
-  if (inEllipse(u, v, 0.37, 0.46, 0.045, 0.045) || inEllipse(u, v, 0.63, 0.46, 0.045, 0.045)) col = C.eye;
+  const dx = u - 0.5, dy = v - 0.5;
+  if (dx * dx + dy * dy > 0.48 * 0.48) return null;             // вне колеса — прозрачно
+  const a = (Math.atan2(dy, dx) * 180 / Math.PI + 90 + 360) % 360;
+  let col = WHEEL[Math.floor(a / 45) % 8];                      // 8 секторов от верха по часовой
+  if (inEllipse(u, v, 0.5, 0.5, 0.24, 0.24)) col = C.white;     // белый ободок вокруг морды
+  if (inEllipse(u, v, 0.5, 0.5, 0.208, 0.208)) col = C.head;    // голова
+  if (inEllipse(u, v, 0.5, 0.552, 0.109, 0.083)) col = C.snout; // пятак
+  if (inEllipse(u, v, 0.460, 0.552, 0.020, 0.031) || inEllipse(u, v, 0.540, 0.552, 0.020, 0.031)) col = C.nostril;
+  if (inEllipse(u, v, 0.443, 0.464, 0.023, 0.023) || inEllipse(u, v, 0.557, 0.464, 0.023, 0.023)) col = C.eye;
   return col;
 }
 

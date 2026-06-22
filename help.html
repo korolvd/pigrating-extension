@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <title>PigRating — установка скрипта</title>
+  <style>
+    :root { --bg:#0f1117; --card:#171a23; --border:#2a2f3a; --text:#e6e8ee; --muted:#9aa3b2; --primary:#2f80ed; --ok:#27ae60; --danger:#eb5757; --warn:#f2c94c; }
+    * { box-sizing: border-box; }
+    body { margin:0; padding:32px 16px 64px; background:var(--bg); color:var(--text); font:15px/1.6 system-ui,"Segoe UI",Roboto,sans-serif; }
+    main { max-width:740px; margin:0 auto; }
+    h1 { font-size:22px; margin:0 0 4px; }
+    h2 { font-size:17px; margin:28px 0 10px; border-bottom:1px solid var(--border); padding-bottom:6px; }
+    p { margin:8px 0; }
+    .muted { color:var(--muted); }
+    a { color:#6ab0ff; }
+    code, kbd { background:#0c0e14; border:1px solid var(--border); border-radius:5px; padding:1px 6px; font-family:ui-monospace,Consolas,monospace; font-size:13px; }
+    kbd { box-shadow:0 1px 0 var(--border); }
+    ol.steps { counter-reset:s; list-style:none; padding:0; margin:0; }
+    ol.steps > li { counter-increment:s; position:relative; padding:12px 12px 12px 48px; margin:8px 0; background:var(--card); border:1px solid var(--border); border-radius:10px; }
+    ol.steps > li::before { content:counter(s); position:absolute; left:12px; top:12px; width:26px; height:26px; border-radius:50%; background:var(--primary); color:#fff; font-weight:700; display:flex; align-items:center; justify-content:center; font-size:13px; }
+    ol.steps > li b { font-weight:600; }
+    .steps img { display:block; max-width:100%; margin:10px 0 0; border:1px solid var(--border); border-radius:8px; }
+    .note { border-left:3px solid var(--warn); background:rgba(242,201,76,.08); padding:8px 12px; border-radius:0 8px 8px 0; margin:8px 0; }
+    .note.err { border-color:var(--danger); background:rgba(235,87,87,.08); }
+    .note.ok { border-color:var(--ok); background:rgba(39,174,96,.08); }
+    .pill { display:inline-block; background:#0c0e14; border:1px solid var(--border); border-radius:6px; padding:2px 8px; font-size:13px; margin:2px 0; }
+    dl { margin:8px 0; }
+    dt { font-weight:600; margin-top:8px; }
+    dd { margin:2px 0 0 0; color:var(--muted); }
+    .imgslot { border:1px dashed var(--border); border-radius:8px; color:var(--muted); font-size:12px; text-align:center; padding:10px; margin:8px 0; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>🐷 Установка скрипта</h1>
+  <p class="muted">Покупка рейтинга за балы канала: скрипт даёт расширению право <b>дописывать баллы в твою Google-таблицу</b>. Ставится один раз, бесплатно, без Google Cloud.</p>
+
+  <h2>Что нужно</h2>
+  <ul>
+    <li>Google-аккаунт, в котором лежит твоя таблица.</li>
+    <li>Сама таблица: доступ <b>«по ссылке — просмотр»</b> (для чтения; запись пойдёт через скрипт).</li>
+    <li>Для создания наград на Twitch — канал со статусом <b>Affiliate/Partner</b>. Но скрипт и запись в таблицу работают и без этого.</li>
+  </ul>
+
+  <h2>Шаги</h2>
+  <ol class="steps">
+    <li>В расширении открой <b>⚙️ Настройки → Google-таблица</b> и заполни: <b>ссылку на таблицу</b>, <b>имя листа</b> (вкладки), <b>столбцы</b> ника и баллов, <b>1-ю строку</b>. Эти значения вшиваются прямо в скрипт.
+      <img src="help/1-fill.png" alt="Поля настроек таблицы в расширении" loading="lazy">
+    </li>
+    <li>Нажми <b>«📋 Скопировать скрипт»</b>. Расширение соберёт код с твоими настройками и сгенерирует <b>секрет</b> (сохранится автоматически) — всё уже в буфере обмена.
+      <div class="note">Если в ссылке нет <code>#gid</code> и не задано имя листа — скрипт будет писать в первый лист. Лучше задать имя листа.</div>
+    </li>
+    <li>Открой свою <b>Google-таблицу</b> → меню <b>Расширения → Apps Script</b>.
+      <img src="help/3-apps-script.png" alt="Меню Расширения → Apps Script" loading="lazy">
+    </li>
+    <li>В редакторе <b>удали весь код по умолчанию</b> (<code>function myFunction() {…}</code>) и <b>вставь</b> скопированный: <kbd>Ctrl</kbd>+<kbd>A</kbd>, затем <kbd>Ctrl</kbd>+<kbd>V</kbd>. Сохрани (<kbd>Ctrl</kbd>+<kbd>S</kbd>).
+      <img src="help/4-paste.png" alt="Вставленный код в редакторе Apps Script" loading="lazy">
+    </li>
+    <li>Справа вверху нажми <b>Начать развёртывание → Новое развёртывание</b>.
+      <img src="help/6-deploy.png" alt="Начать развёртывание → Новое развёртывание" loading="lazy">
+    </li>
+    <li>У «Выберите тип» нажми шестерёнку ⚙️ → выбери <b>Веб-приложение</b>.
+      <img src="help/7-type.png" alt="Выбор типа: Веб-приложение" loading="lazy">
+    </li>
+    <li>Настрой два поля в «Конфигурация»:
+      <dl>
+        <dt>Запуск от имени</dt><dd><b>От моего имени</b> — чтобы скрипт писал в таблицу под твоим аккаунтом.</dd>
+        <dt>У кого есть доступ</dt><dd><b>Все</b> — обязательно! По умолчанию стоит «Только у меня» — поменяй на «Все».</dd>
+      </dl>
+      <img src="help/8-access.png" alt="Запуск от имени и У кого есть доступ" loading="lazy">
+      <div class="note err">Это важно: при «Только у меня» (или «Все, у кого есть аккаунт Google») расширение получит страницу логина вместо ответа, и индикатор покажет «не JSON».</div>
+    </li>
+    <li>Нажми <b>Начать развёртывание</b>. Google попросит авторизацию:
+      <ul>
+        <li>Выбери свой аккаунт.</li>
+        <li>Экран «Google не проверил это приложение» → <b>Дополнительно</b> → <b>Перейти к … (небезопасно)</b> → <b>Разрешить</b>.</li>
+      </ul>
+      <div class="note">Это нормально и безопасно — приложение твоё собственное, оно работает только с твоей таблицей.</div>
+    </li>
+    <li>Скопируй <b>URL веб-приложения</b> — он заканчивается на <code>/exec</code>.
+      <img src="help/10-url.png" alt="URL веб-приложения" loading="lazy">
+    </li>
+    <li>Вставь URL в расширении в поле <b>«URL веб-аппа»</b>. Индикатор станет <span class="pill">🟢 работает</span>.
+      <img src="help/11-paste-url.png" alt="Вставка URL в расширение" loading="lazy">
+      <div class="note ok">Готово. Теперь покупки рейтинга за балы канала будут дописываться в таблицу.</div>
+    </li>
+  </ol>
+
+  <h2>Как обновить скрипт</h2>
+  <p>Если поменял настройки таблицы или вышла новая версия расширения — пересними скрипт, чтобы <b>URL не менялся</b>:</p>
+  <ol class="steps">
+    <li>В расширении снова <b>«Скопировать скрипт»</b>.</li>
+    <li>В Apps Script вставь код поверх старого, сохрани.</li>
+    <li><b>Развернуть → Управление развёртываниями</b> → ✏️ (карандаш) → <b>Версия: Новая версия</b> → <b>Развернуть</b>. URL остаётся прежним.</li>
+  </ol>
+  <p class="muted">Если сделать «Новое развёртывание» — получишь <b>новый</b> URL, тогда вставь его в расширение заново.</p>
+
+  <h2>Если что-то не так</h2>
+  <dl>
+    <dt class="pill">🔴 «Веб-апп вернул не JSON»</dt>
+    <dd>Проверь развёртывание: тип = <b>Веб-приложение</b>, доступ = <b>Все</b>, запуск = <b>Я</b>, и что URL заканчивается на <code>/exec</code>. Часто помогает «Новая версия» деплоя.</dd>
+    <dt class="pill">🔴 «неверный секрет / bad secret»</dt>
+    <dd>Секрет в расширении не совпал со скриптом. Нажми «Скопировать скрипт» ещё раз и задеплой новую версию.</dd>
+    <dt class="pill">«broadcaster doesn't have partner or affiliate status»</dt>
+    <dd>Это уже про награды Twitch: создавать награды за баллы канала может только канал со статусом <b>Affiliate/Partner</b>. К установке скрипта не относится.</dd>
+  </dl>
+
+  <p class="muted" style="margin-top:32px">Эта страница — часть расширения PigRating. Закрой вкладку, когда закончишь.</p>
+</main>
+</body>
+</html>
