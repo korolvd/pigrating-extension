@@ -5,7 +5,7 @@
 // Стримеры просто жмут «Подключить»; поле в настройках — необязательный override своим приложением.
 export const DEFAULT_TWITCH_CLIENT_ID = 'dz9xq3cgvky8wz4qg0jbijc351ylox';
 
-const SCOPES = 'channel:manage:redemptions';
+const SCOPES = 'channel:manage:redemptions user:read:chat channel:read:subscriptions channel:read:vips moderation:read moderator:read:followers';
 const HELIX = 'https://api.twitch.tv/helix';
 
 // Проверка user access token → { client_id, login, user_id, scopes, expires_in }
@@ -64,7 +64,7 @@ function rewardBody(row) {
     is_user_input_required: row.target === 'input',
     should_redemptions_skip_request_queue: false, // редемпшены идут в очередь → мы их подтверждаем/возвращаем (режим B)
   };
-  if (row.target === 'input') b.prompt = 'Введи ник, кому начислить рейтинг';
+  if (row.target === 'input') b.prompt = row.prompt || 'Введи ник, кому начислить рейтинг';
   return b;
 }
 
@@ -113,12 +113,55 @@ export async function userExists(ctx, login) {
   return Array.isArray(r.data) && r.data.length > 0;
 }
 
+// ── статусы зрителя по user_id (свежие, в момент активации; бросают при ошибке — вызывающий ловит) ──
+export async function getSubTier(ctx, userId) { // тир подписки 1/2/3 или 0
+  const r = await helix('/subscriptions', { clientId: ctx.clientId, token: ctx.token, query: { broadcaster_id: ctx.broadcasterId, user_id: userId } });
+  const tier = r.data && r.data[0] && r.data[0].tier; // '1000'|'2000'|'3000'
+  return tier ? Math.round((parseInt(tier, 10) || 0) / 1000) : 0;
+}
+export async function isVip(ctx, userId) {
+  const r = await helix('/channels/vips', { clientId: ctx.clientId, token: ctx.token, query: { broadcaster_id: ctx.broadcasterId, user_id: userId } });
+  return Array.isArray(r.data) && r.data.length > 0;
+}
+export async function isMod(ctx, userId) {
+  const r = await helix('/moderation/moderators', { clientId: ctx.clientId, token: ctx.token, query: { broadcaster_id: ctx.broadcasterId, user_id: userId } });
+  return Array.isArray(r.data) && r.data.length > 0;
+}
+export async function isFollower(ctx, userId) {
+  const r = await helix('/channels/followers', { clientId: ctx.clientId, token: ctx.token, query: { broadcaster_id: ctx.broadcasterId, user_id: userId } });
+  return Array.isArray(r.data) && r.data.length > 0;
+}
+
+// Подписка на сообщения чата (для фичи «ставка за значки»: значки + текст приходят в сообщении награды с вводом).
+export function subscribeChatMessages(ctx, sessionId) {
+  return helix('/eventsub/subscriptions', {
+    clientId: ctx.clientId, token: ctx.token, method: 'POST',
+    body: {
+      type: 'channel.chat.message',
+      version: '1',
+      condition: { broadcaster_user_id: String(ctx.broadcasterId), user_id: String(ctx.broadcasterId) },
+      transport: { method: 'websocket', session_id: sessionId },
+    },
+  });
+}
+export function chatMessageEvent(ev) {
+  return {
+    messageId: ev.message_id,
+    userId: ev.chatter_user_id,
+    userLogin: ev.chatter_user_login,
+    text: ev.message && ev.message.text,
+    badges: Array.isArray(ev.badges) ? ev.badges : [],
+    rewardId: ev.channel_points_custom_reward_id || '',
+  };
+}
+
 // EventSub-payload редемпшена → ev для resolveRedemption.
 export function redemptionEvent(ev) {
   return {
     redemptionId: ev.id,
     rewardId: ev.reward && ev.reward.id,
     rewardTitle: ev.reward && ev.reward.title,
+    userId: ev.user_id,
     userLogin: ev.user_login,
     userName: ev.user_name,
     userInput: ev.user_input,
@@ -139,7 +182,7 @@ export async function setRewardsEnabled(ctx, rows, enabled) {
 
 const titleKey = (t) => String(t || '').trim().toLowerCase();
 
-export async function syncRewards(ctx, rows) {
+export async function syncRewards(ctx, rows, keepExtra = []) {
   // Существующие награды нашего приложения — для переиспользования одноимённых (после переустановки/рассинхрона) и зачистки сирот.
   let existing = [];
   try { existing = (await listRewards(ctx)).data || []; } catch { /* список недоступен — без адопции и зачистки */ }
@@ -175,10 +218,25 @@ export async function syncRewards(ctx, rows) {
     const keepId = new Set(), keepTitle = new Set();
     for (const r of rows) { if (r.rewardId) keepId.add(r.rewardId); if (r.rewardTitle) keepTitle.add(titleKey(r.rewardTitle)); }
     for (const r of out) if (r.rewardId) keepId.add(r.rewardId);
+    for (const id of keepExtra) if (id) keepId.add(id); // награды других фич (напр. «Предложить фильм») не трогаем
     for (const rw of existing) {
       if (keepId.has(rw.id) || keepTitle.has(titleKey(rw.title))) continue;
       try { await deleteReward(ctx, rw.id); } catch { /* уже удалена — ок */ }
     }
   } catch { /* пропускаем зачистку */ }
   return out;
+}
+
+// Создать/обновить ОДНУ награду без зачистки сирот (для самостоятельных наград, напр. «Предложить фильм»).
+export async function syncReward(ctx, row) {
+  const body = rewardBody(row);
+  let id = row.rewardId;
+  if (!id) { // нет сохранённого id — поискать одноимённую (после рассинхрона), чтобы не плодить дубликат
+    try { const ex = (await listRewards(ctx)).data || []; const m = ex.find((r) => titleKey(r.title) === titleKey(row.rewardTitle)); if (m) id = m.id; } catch { /* нет доступа — создадим */ }
+  }
+  if (id) {
+    try { return await updateReward(ctx, id, body); }
+    catch (e) { if (e.status === 404) return await createReward(ctx, body); throw e; }
+  }
+  return await createReward(ctx, body);
 }

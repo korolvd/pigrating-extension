@@ -1,5 +1,5 @@
-import { DEFAULTS, fetchSheetRows, getLots, buildPlan, resolveChoice, buildRollbackPlan, parseSheetRef, buildAppsScript, healthCheck, normNick } from './core.js';
-import { connectTwitch, syncRewards, setRewardsEnabled, deleteReward, DEFAULT_TWITCH_CLIENT_ID } from './twitch.js';
+import { DEFAULTS, fetchSheetRows, getLots, buildPlan, resolveChoice, buildRollbackPlan, parseSheetRef, buildAppsScript, healthCheck, normNick, MOVIE_BADGE_POOL } from './core.js';
+import { connectTwitch, syncRewards, syncReward, setRewardsEnabled, deleteReward, updateReward, DEFAULT_TWITCH_CLIENT_ID } from './twitch.js';
 
 let currentPlan = null;       // план залива (предпросмотр)
 let currentSettings = null;   // настройки на момент предпросмотра/отката
@@ -269,6 +269,7 @@ async function runHealthCheck() {
 
 // ── маппинг наград Twitch → рейтинг (динамические строки таблицы) ──
 let rmapTimer;
+let movieTimer;
 function escapeHtml(s) { return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 function rewardRowHtml(r = {}) {
   const tgt = r.target === 'input' ? 'input' : 'self';
@@ -309,7 +310,7 @@ async function onToggleRewards() {
   try {
     let res;
     if (active) {
-      res = await syncRewards(ctx, rows);
+      res = await syncRewards(ctx, rows, [s.movieRewardId].filter(Boolean)); // не снести награду «Предложить фильм» при зачистке
       const persist = res.map(({ rewardId, rewardTitle, cost, points, target }) => ({ rewardId: rewardId || '', rewardTitle, cost, points, target }));
       await saveSettings({ rewardMap: persist, twitchRewardsActive: true });
       renderRewardMap(persist);
@@ -322,6 +323,59 @@ async function onToggleRewards() {
     else setStatus(active ? `Награды активны: ${res.filter((r) => r.syncStatus === 'ok').length}.` : 'Награды выключены.', 'ok');
   } catch (e) {
     $('rewardsActive').checked = !active; syncRewardBar(); // откат визуального состояния
+    setStatus(`Twitch: ${e.message}`, 'error');
+  }
+}
+
+// ── фича «ставка за значки на фильм» ──
+function movieBadgeRowHtml(b) {
+  const pool = MOVIE_BADGE_POOL.find((p) => p.key === b.key);
+  return `<div class="row mbadge-row" data-key="${escapeHtml(b.key)}" style="gap:8px; align-items:center; padding:3px 0">
+    <span style="flex:1; min-width:0">${escapeHtml(pool ? pool.label : b.key)}</span>
+    <input class="mb-price mini" type="number" min="0" value="${Number(b.price) || 0}" style="width:74px; text-align:right" />
+    <button class="mb-del undo" title="убрать">✕</button>
+  </div>`;
+}
+function renderMovieBadges(list) {
+  const rows = Array.isArray(list) ? list : [];
+  $('movieBadgeList').innerHTML = rows.length ? rows.map(movieBadgeRowHtml).join('') : '<div class="muted" style="font-size:11px">пока ничего — добавь значок ниже</div>';
+}
+function readMovieBadges() {
+  return [...document.querySelectorAll('#movieBadgeList .mbadge-row')].map((r) => ({ key: r.dataset.key, price: parseInt(r.querySelector('.mb-price').value, 10) || 0 }));
+}
+function populateMoviePicker(list) {
+  const used = new Set((Array.isArray(list) ? list : []).map((b) => b.key));
+  $('movieBadgePick').innerHTML = '<option value="">+ добавить значок…</option>' +
+    MOVIE_BADGE_POOL.filter((p) => !used.has(p.key)).map((p) => `<option value="${p.key}">${escapeHtml(p.label)}</option>`).join('');
+}
+async function saveMovie() { await saveSettings({ movieBase: parseInt($('movieBase').value, 10) || 0, movieBadges: readMovieBadges() }); flashSaved(); }
+function syncMovieBar() { $('movieSwitch').classList.toggle('on', $('movieActive').checked); }
+
+// тумблер фичи: вкл → создать/включить награду «Предложить фильм» (новый раунд); выкл → выключить
+async function onToggleMovieBids() {
+  const active = $('movieActive').checked;
+  syncMovieBar();
+  const s = await loadSettings();
+  if (!s.twitchToken || !s.twitchUserId) { $('movieActive').checked = false; syncMovieBar(); return setStatus('Сначала подключи Twitch.', 'error'); }
+  const ctx = { clientId: s.twitchClientId || DEFAULT_TWITCH_CLIENT_ID, token: s.twitchToken, broadcasterId: s.twitchUserId };
+  const title = (s.movieRewardTitle || 'Предложить фильм').trim();
+  setStatus(active ? 'Создаю награду «Предложить фильм»…' : 'Выключаю награду…');
+  try {
+    if (active) {
+      const reward = await syncReward(ctx, { rewardId: s.movieRewardId || '', rewardTitle: title, cost: 1, points: 0, target: 'input', prompt: 'Напиши название фильма' });
+      await saveSettings({ movieRewardId: reward.id, movieBidsActive: true, movieBase: parseInt($('movieBase').value, 10) || 0 });
+      await chrome.runtime.sendMessage({ type: 'movie-new-round' }).catch(() => {}); // сброс раунда атомарно в фоне (очередь + зачёт + журнал + кэши)
+      chrome.runtime.sendMessage({ type: 'movie-subscribe' }).catch(() => {}); // поднять чат-подписку на текущей сессии
+      renderMovieJournal([]);
+      setStatus('Награда «Предложить фильм» активна.', 'ok');
+    } else {
+      let warn = '';
+      if (s.movieRewardId) { try { await updateReward(ctx, s.movieRewardId, { is_enabled: false }); } catch (err) { warn = ` (⚠ могла остаться активной: ${err.message})`; } }
+      await saveSettings({ movieBidsActive: false }); // id сохраняем (keepExtra защитит, можно снова включить)
+      setStatus('Награда «Предложить фильм» выключена.' + warn, warn ? 'error' : 'ok');
+    }
+  } catch (e) {
+    $('movieActive').checked = !active; syncMovieBar();
     setStatus(`Twitch: ${e.message}`, 'error');
   }
 }
@@ -399,6 +453,30 @@ function renderTwitchLog(log) {
   }).join('');
 }
 
+function renderMovieJournal(log) {
+  const el = $('movieJournal'); if (!el) return;
+  const rows = Array.isArray(log) ? log : [];
+  if (!rows.length) { el.innerHTML = '<div class="muted" style="font-size:11px">пока пусто</div>'; return; }
+  el.innerHTML = rows.map((e) => {
+    const t = new Date(e.at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+    const who = e.userLogin ? `<span class="muted">@${escapeHtml(e.userLogin)} →</span> ` : '';
+    const head = e.ok
+      ? `<b style="font-weight:500" class="pos">${e.amount}</b><span class="muted"> → pointauc</span>`
+      : `<span class="neg">${e.refunded ? 'балл возвращён' : 'ошибка'}</span>`;
+    let detail;
+    if (e.ok) {
+      const parts = (e.badges || []).map((b) => { const p = MOVIE_BADGE_POOL.find((x) => x.key === b.key); return `<span class="pos">${escapeHtml(p ? p.label : b.key)} +${b.price}</span>`; });
+      detail = parts.length ? parts.concat('база').join(' · ') : 'без значков · только база';
+      if (e.note) detail += ` · ⚠ ${escapeHtml(e.note)}`;
+    } else {
+      detail = escapeHtml(e.note || 'новых значков нет — все уже зачтены');
+    }
+    return `<div style="font-size:11px; padding:5px 0; border-top:1px solid var(--border)">`
+      + `<div><span class="dot" style="background:${e.ok ? '#27ae60' : '#eb5757'}"></span> ${who}<b style="font-weight:500">«${escapeHtml(e.movie || '')}»</b> ${head}<span class="muted" style="float:right">${t}</span></div>`
+      + `<div class="muted" style="margin-left:14px; margin-top:2px">${detail}</div></div>`;
+  }).join('');
+}
+
 async function copyToClipboard(text) {
   try { await navigator.clipboard.writeText(text); return true; }
   catch {
@@ -439,6 +517,7 @@ chrome.runtime.onMessage.addListener((m) => {
   else if (m?.type === 'error') setStatus(m.message, 'error');
   else if (m?.type === 'twitch-log') loadSettings().then((s) => renderTwitchLog(s.twitchLog));
   else if (m?.type === 'twitch-pending') loadSettings().then((s) => renderTwitchPending(s.twitchPending));
+  else if (m?.type === 'movie-journal') loadSettings().then((s) => renderMovieJournal(s.movieJournal));
 });
 
 // ───────────────────────── инициализация ─────────────────────────
@@ -452,6 +531,8 @@ async function init() {
   $('buySameCol').checked = s.buySameCol; $('buyPointsCol').value = s.buyPointsCol; toggleBuyCol();
   renderRewardMap(s.rewardMap);
   $('rewardsActive').checked = s.twitchRewardsActive; syncRewardBar();
+  $('movieBase').value = s.movieBase; $('movieActive').checked = s.movieBidsActive; syncMovieBar();
+  renderMovieBadges(s.movieBadges); populateMoviePicker(s.movieBadges);
   $('autoApprove').checked = s.twitchAutoApprove;
   $('twitchClientId').value = s.twitchClientId;
   $('twitchRedirect').textContent = chrome.identity.getRedirectURL();
@@ -459,6 +540,7 @@ async function init() {
   renderStatusStrip(s);
   renderTwitchPending(s.twitchPending);
   renderTwitchLog(s.twitchLog);
+  renderMovieJournal(s.movieJournal);
   if (!s.token || !s.sheetUrl) $('settings').open = true;
   showLastApplied();
   refreshRollbackButton();
@@ -499,6 +581,12 @@ async function init() {
   $('twitchConnect').addEventListener('click', onTwitchConnect);
   $('twitchDisconnect').addEventListener('click', onTwitchDisconnect);
   $('rewardsActive').addEventListener('change', onToggleRewards);
+  $('movieActive').addEventListener('change', onToggleMovieBids);
+  $('movieBase').addEventListener('input', () => { clearTimeout(movieTimer); movieTimer = setTimeout(saveMovie, 400); });
+  $('movieBadgeList').addEventListener('input', () => { clearTimeout(movieTimer); movieTimer = setTimeout(saveMovie, 400); });
+  $('movieBadgeList').addEventListener('click', async (e) => { if (!e.target.closest('.mb-del')) return; e.target.closest('.mbadge-row').remove(); const list = readMovieBadges(); renderMovieBadges(list); populateMoviePicker(list); await saveMovie(); });
+  $('movieBadgePick').addEventListener('change', async (e) => { const key = e.target.value; if (!key) return; const list = readMovieBadges(); list.push({ key, price: 0 }); renderMovieBadges(list); populateMoviePicker(list); await saveMovie(); e.target.value = ''; });
+  $('movieNewRound').addEventListener('click', async () => { await chrome.runtime.sendMessage({ type: 'movie-new-round' }).catch(() => {}); renderMovieJournal([]); setStatus('Новый раунд — зачёт значков сброшен.', 'ok'); });
   $('twitchPending').addEventListener('click', (e) => {
     const row = e.target.closest('.prow'); if (!row) return;
     const sug = e.target.closest('.psuggest');

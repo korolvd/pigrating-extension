@@ -22,6 +22,7 @@
     <symbol id="ic-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6l-12 12"/><path d="M6 6l12 12"/></symbol>
     <symbol id="ic-help" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 17v.01"/><path d="M12 13.5a1.5 1.5 0 0 1 1 -1.5a2.6 2.6 0 1 0 -3 -4"/></symbol>
     <symbol id="ic-bolt" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 3v7h6l-8 11v-7h-6l8 -11"/></symbol>
+    <symbol id="ic-movie" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4m0 2a2 2 0 0 1 2 -2h12a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-12a2 2 0 0 1 -2 -2z"/><path d="M8 4l0 16"/><path d="M16 4l0 16"/><path d="M4 8l4 0"/><path d="M4 16l4 0"/><path d="M4 12l16 0"/><path d="M16 8l4 0"/><path d="M16 16l4 0"/></symbol>
   </svg>
 
   <header>
@@ -33,6 +34,10 @@
     <span class="reward-switch" id="rewardSwitch" title="Награды за балы канала — вкл/выкл. Вкл создаёт/включает награды на Twitch (зрители могут покупать). Поменял награды → выключи и включи.">
       <svg class="ic"><use href="#ic-gift"/></svg>
       <label class="switch"><input id="rewardsActive" type="checkbox" /><span class="track"></span></label>
+    </span>
+    <span class="reward-switch" id="movieSwitch" title="Ставки за значки — вкл создаёт награду «Предложить фильм» (1 балл + ввод). Ставка = база + сумма цен значков зрителя → в очередь pointauc. Настройки — в разделе «Ставки за значки».">
+      <svg class="ic"><use href="#ic-movie"/></svg>
+      <label class="switch"><input id="movieActive" type="checkbox" /><span class="track"></span></label>
     </span>
   </div>
 
@@ -62,6 +67,11 @@
   <details class="card">
     <summary><svg class="ic"><use href="#ic-receipt"/></svg> Последние начисления (Twitch)</summary>
     <div id="twitchLog"></div>
+  </details>
+
+  <details class="card">
+    <summary><svg class="ic"><use href="#ic-movie"/></svg> Журнал ставок за значки</summary>
+    <div id="movieJournal"></div>
   </details>
 
   <details id="settings" class="card">
@@ -141,6 +151,27 @@
         <button id="addReward" class="ghost">+ добавить награду</button>
       </div>
       <div class="muted" style="font-size:10px; margin-top:4px">Включаются/выключаются тумблером «Награды за балы канала» наверху. Поменял награды? Выключи и включи, чтобы применить.</div>
+    </details>
+
+    <details class="card">
+      <summary><svg class="ic"><use href="#ic-movie"/></svg> Ставки за значки</summary>
+      <div class="muted" style="font-size:11px; margin:4px 0">
+        Награда «Предложить фильм» (1 балл, ввод названия) создаётся тумблером наверху. Ставка = база + сумма цен значков зрителя → в очередь подтверждения pointauc. Считаются только <b>новые</b> значки; повтор без новых → возврат балла; сброс при включении тумблера.
+      </div>
+      <div class="row" style="gap:8px; align-items:center; margin:6px 0">
+        <span>База за активацию</span>
+        <input id="movieBase" class="mini" type="number" min="0" value="1" />
+        <span class="muted" style="font-size:11px">балл(ов) к сумме значков</span>
+      </div>
+      <div class="muted" style="font-size:11px; margin:8px 0 4px">Учитываемые значки (добавь из пула, задай цену):</div>
+      <div id="movieBadgeList"></div>
+      <div class="row" style="gap:8px; margin-top:6px">
+        <select id="movieBadgePick"><option value="">+ добавить значок…</option></select>
+      </div>
+      <div class="row" style="gap:8px; margin-top:8px">
+        <button id="movieNewRound" class="ghost">↻ Новый раунд (сбросить зачёт значков)</button>
+      </div>
+      <div class="muted" style="font-size:10px; margin-top:4px">Тумблер «Ставки за значки» — наверху. Включение начинает новый раунд; «Новый раунд» сбрасывает зачёт, не выключая награду.</div>
     </details>
 
     <div class="muted" style="font-size:11px; margin-top:6px">Настройки сохраняются автоматически. <span id="savedHint" class="saved-hint">✓ сохранено</span></div>

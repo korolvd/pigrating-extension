@@ -22,6 +22,15 @@ export const DEFAULTS = {
   rewardMap: [],          // награды Twitch → рейтинг: [{ rewardId, rewardTitle, cost, points, target:'self'|'input' }] (cost — цена в балах канала; расширение само создаёт награды)
   twitchRewardsActive: false, // мастер-переключатель: награды созданы и включены на Twitch
   twitchAutoApprove: true,    // авто-начисление покупок (кроме ненайденных на Twitch ников — те на подтверждение)
+  // фича «ставка за значки на фильм» (отдельно от соцрейтинга)
+  movieBidsActive: false,     // вкл/выкл награды «Предложить фильм»
+  movieBase: 1,               // база, прибавляемая к сумме цен значков
+  movieRewardTitle: 'Предложить фильм',
+  movieRewardId: '',          // id созданной награды на Twitch
+  movieBadges: [],            // выбранные значки с ценами: [{ key, price }]
+  moviePending: [],           // незавершённые активации (ждут пары/обработки) — переживают сон SW
+  movieCounted: {},           // зачтённое в раунде: { userId: [badgeKey,...] } — авторитетный источник анти-повтора
+  movieJournal: [],           // журнал ставок раунда (для показа)
   twitchClientId: '',     // Client ID Twitch-приложения стримера (dev.twitch.tv)
   twitchToken: '',        // user access token (implicit OAuth), скоуп channel:manage:redemptions
   twitchUserId: '',       // broadcaster user_id
@@ -205,6 +214,57 @@ export function suggestNick(nick, roster, threshold = 0.4) {
     if (score > threshold && (!best || score > best.score)) best = { nick: String(raw).trim(), score };
   }
   return best;
+}
+
+// Пул значков для фичи «ставка за значки»: key (внутр. id), label (показ), src ('helix'|'chat') + как детектить (M2).
+// helix: sub (тир), vip, mod, follower — точечный запрос. chat: setId (+version/minVersion) — из badges сообщения.
+export const MOVIE_BADGE_POOL = [
+  { key: 'sub1', label: 'Саб · Tier 1', src: 'helix', sub: 1 },
+  { key: 'sub2', label: 'Саб · Tier 2', src: 'helix', sub: 2 },
+  { key: 'sub3', label: 'Саб · Tier 3', src: 'helix', sub: 3 },
+  { key: 'vip', label: 'VIP', src: 'helix' },
+  { key: 'mod', label: 'Модератор', src: 'helix' },
+  { key: 'follower', label: 'Фолловер', src: 'helix' },
+  { key: 'giftlead1', label: 'Топ-1 даритель', src: 'chat', setId: 'sub-gift-leader', version: '1' },
+  { key: 'giftlead2', label: 'Топ-2 даритель', src: 'chat', setId: 'sub-gift-leader', version: '2' },
+  { key: 'giftlead3', label: 'Топ-3 даритель', src: 'chat', setId: 'sub-gift-leader', version: '3' },
+  { key: 'gifter1', label: 'Sub-gifter · 1+', src: 'chat', setId: 'sub-gifter', minVersion: 1 },
+  { key: 'gifter5', label: 'Sub-gifter · 5+', src: 'chat', setId: 'sub-gifter', minVersion: 5 },
+  { key: 'gifter10', label: 'Sub-gifter · 10+', src: 'chat', setId: 'sub-gifter', minVersion: 10 },
+  { key: 'gifter25', label: 'Sub-gifter · 25+', src: 'chat', setId: 'sub-gifter', minVersion: 25 },
+  { key: 'bits1000', label: 'Биты · 1000+', src: 'chat', setId: 'bits', minVersion: 1000 },
+  { key: 'bits5000', label: 'Биты · 5000+', src: 'chat', setId: 'bits', minVersion: 5000 },
+  { key: 'bits10000', label: 'Биты · 10000+', src: 'chat', setId: 'bits', minVersion: 10000 },
+  { key: 'founder', label: 'Founder', src: 'chat', setId: 'founder' },
+];
+
+// Какие из ВЫБРАННЫХ значков есть у зрителя сейчас. selected: [{key,price}];
+// chatBadges: [{set_id,id}] из сообщения; status: { subTier:0|1|2|3, vip, mod, follower } из Helix.
+export function applicableMovieBadges(selected, chatBadges, status) {
+  const verBySet = new Map();
+  for (const b of (Array.isArray(chatBadges) ? chatBadges : [])) verBySet.set(b.set_id, b.id);
+  const st = status || {};
+  const out = [];
+  for (const sel of (Array.isArray(selected) ? selected : [])) {
+    const p = MOVIE_BADGE_POOL.find((x) => x.key === sel.key);
+    if (!p) continue;
+    let ok = false;
+    if (p.src === 'helix') {
+      if (p.sub) ok = st.subTier === p.sub;
+      else if (p.key === 'vip') ok = !!st.vip;
+      else if (p.key === 'mod') ok = !!st.mod;
+      else if (p.key === 'follower') ok = !!st.follower;
+    } else {
+      const ver = verBySet.get(p.setId);
+      if (ver != null) {
+        if (p.version != null) ok = String(ver) === String(p.version);
+        else if (p.minVersion != null) ok = (parseInt(ver, 10) || 0) >= p.minVersion;
+        else ok = true; // founder и т.п. — по факту наличия
+      }
+    }
+    if (ok) out.push({ key: sel.key, price: Number(sel.price) || 0 });
+  }
+  return out;
 }
 
 // Генерирует код Apps Script (doPost) с подставленными настройками + секретом.

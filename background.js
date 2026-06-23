@@ -1,8 +1,8 @@
 // Фоновый service worker: выполняет заливку и откат независимо от popup.
 // Окно расширения можно закрыть — операция дойдёт до конца.
 
-import { executePlan, executeRollback, resolveRedemption, addPoints, normNick, fetchSheetRows, suggestNick } from './core.js';
-import { subscribeRedemptions, updateRedemptionStatus, redemptionEvent, userExists, DEFAULT_TWITCH_CLIENT_ID } from './twitch.js';
+import { executePlan, executeRollback, resolveRedemption, addPoints, normNick, fetchSheetRows, suggestNick, applicableMovieBadges, postBids } from './core.js';
+import { subscribeRedemptions, updateRedemptionStatus, redemptionEvent, userExists, subscribeChatMessages, chatMessageEvent, getSubTier, isVip, isMod, isFollower, DEFAULT_TWITCH_CLIENT_ID } from './twitch.js';
 
 let running = false;
 
@@ -12,6 +12,8 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg?.type === 'twitch-reconnect') { paused = false; ensureListener(); sendResponse?.({ ok: true }); return; }
   if (msg?.type === 'twitch-resolve') { resolvePending(msg.redemptionId, msg.action, msg.overrideNick).then(() => sendResponse({ ok: true })).catch((e) => sendResponse({ error: e.message })); return true; }
   if (msg?.type === 'twitch-resolve-all') { resolveAllPending(msg.action).then(() => sendResponse({ ok: true })).catch((e) => sendResponse({ error: e.message })); return true; }
+  if (msg?.type === 'movie-subscribe') { subscribeMovieChat().then(() => sendResponse({ ok: true })).catch((e) => sendResponse({ error: e.message })); return true; } // тумблер фичи включили в середине сессии → поднять чат-подписку
+  if (msg?.type === 'movie-new-round') { newMovieRound().then(() => sendResponse({ ok: true })).catch((e) => sendResponse({ error: e.message })); return true; } // сброс раунда атомарно в SW
 });
 
 const broadcast = (m) => chrome.runtime.sendMessage(m).catch(() => {});
@@ -139,6 +141,10 @@ async function handleWs(sock, msg) {
           const s = await chrome.storage.local.get(null);
           await subscribeRedemptions(ctxFrom(s), sessionId);
           backoffMs = 1000;                                  // сброс backoff ТОЛЬКО после успешной подписки
+          if (s.movieBidsActive) { // фича «ставка за значки» → ещё и сообщения чата (нужен скоуп user:read:chat)
+            try { await subscribeChatMessages(ctxFrom(s), sessionId); }
+            catch (e2) { await logEvent({ ok: false, note: `чат-подписка не удалась (переподключи Twitch для нового доступа): ${e2.message}` }); }
+          }
         } catch (e) {
           killSock(ws); ws = null; sessionId = null;          // не держим живой сокет без подписки (Twitch его всё равно закроет ~10с)
           await logEvent({ ok: false, note: `подписка не удалась: ${e.message}` });
@@ -153,6 +159,7 @@ async function handleWs(sock, msg) {
       break;
     case 'notification':
       if (meta.subscription_type === 'channel.channel_points_custom_reward_redemption.add') await onRedemption(msg.payload.event);
+      else if (meta.subscription_type === 'channel.chat.message') await onMovieChat(msg.payload.event);
       break;
     case 'revocation':
       await logEvent({ ok: false, note: 'Twitch отозвал подписку (токен/награда) — переподключи канал.' });
@@ -206,6 +213,11 @@ async function onRedemption(eventPayload) {
   seen.add(ev.redemptionId);
   if (seen.size > 5000) seen.delete(seen.values().next().value); // FIFO-эвикция: дедуп нужен лишь на короткое окно переотправки
   const s = await chrome.storage.local.get(null);
+  if (s.movieRewardId && ev.rewardId === s.movieRewardId) { // награда «Предложить фильм»
+    if (s.movieBidsActive) return onMovieRedemption({ redemptionId: ev.redemptionId, userId: ev.userId, userLogin: ev.userLogin, movie: ev.userInput || '' }); // значки придут из чата
+    await setRedemption(ctxFrom(s), s.movieRewardId, ev.redemptionId, 'CANCELED'); // фича выкл → вернуть балл, не зависать
+    return;
+  }
   const res = resolveRedemption(s.rewardMap, ev);
   if (!res) return; // награда не из нашего маппинга — игнор (напр. награда pointauc)
   const ctx = ctxFrom(s);
@@ -297,8 +309,170 @@ function logEvent(entry) {
   });
 }
 
-chrome.runtime.onStartup?.addListener(ensureListener);
-chrome.runtime.onInstalled?.addListener(ensureListener);
+// ── фича «ставка за значки на фильм» ──
+// Надёжно, как рейтинговая ветка: незавершённые активации персистятся (moviePending) → переживают сон SW;
+// обработка сериализована (drainMovie singleton + claim-перед-обработкой = at-most-once); «зачтённое» —
+// отдельный movieCounted (без капа, авторитетный источник анти-повтора), журнал — только для показа.
+const seenMsg = new Set();   // дедуп сообщений чата
+const lockMovie = mutex();   // RMW над moviePending/movieCounted/movieJournal
+const movieChat = new Map(); // userId|текст → { badges, at } — чат-значки (порядок событий в рамках сессии)
+const movieNorm = (t) => String(t || '').trim().toLowerCase();
+const movieKey = (userId, text) => `${userId}|${movieNorm(text)}`;
+let draining = false;
+let movieGen = 0; // поколение раунда: in-flight активация со старым gen не пишет в новый раунд (сброс во время обработки)
+
+// redemption.add награды «Предложить фильм» → персист незавершённой активации (по redemptionId — без коллизий)
+async function onMovieRedemption(red) { // { redemptionId, userId, userLogin, movie }
+  await lockMovie(async () => {
+    const { moviePending = [] } = await chrome.storage.local.get('moviePending');
+    if (moviePending.some((p) => p.redemptionId === red.redemptionId)) return; // дедуп
+    const c = movieChat.get(movieKey(red.userId, red.movie)); // чат уже пришёл? — забрать значки сразу
+    moviePending.push({ ...red, badges: c ? c.badges : null, at: Date.now() });
+    await chrome.storage.local.set({ moviePending });
+  });
+  drainMovie();
+  setTimeout(drainMovie, 8500); // ждём чат до ~8с (если SW жив); иначе подхватит alarm/рестарт
+}
+
+// channel.chat.message награды → значки ожидающей активации (или в кэш, если редемпшен ещё не пришёл)
+async function onMovieChat(eventPayload) {
+  const ev = chatMessageEvent(eventPayload);
+  if (!ev.rewardId || !ev.messageId) return;
+  const { movieRewardId, movieBidsActive } = await chrome.storage.local.get(['movieRewardId', 'movieBidsActive']);
+  if (!movieBidsActive || !movieRewardId || ev.rewardId !== movieRewardId) return;  // фича выкл / не наша награда
+  if (seenMsg.has(ev.messageId)) return;
+  seenMsg.add(ev.messageId); if (seenMsg.size > 5000) seenMsg.delete(seenMsg.values().next().value);
+  const key = movieKey(ev.userId, ev.text || '');
+  const now = Date.now();
+  movieChat.set(key, { badges: ev.badges || [], at: now });
+  for (const [k, v] of movieChat) if (now - v.at > 30000) movieChat.delete(k); // прунинг
+  let attached = false;
+  await lockMovie(async () => {
+    const { moviePending = [] } = await chrome.storage.local.get('moviePending');
+    const m = moviePending.find((p) => p.badges === null && movieKey(p.userId, p.movie) === key);
+    if (!m) return;
+    m.badges = ev.badges || [];
+    await chrome.storage.local.set({ moviePending });
+    attached = true;
+  });
+  if (attached) drainMovie();
+}
+
+// Сериализованная обработка готовых (есть значки) и протухших (>8с) активаций. claim-перед-обработкой → at-most-once.
+// Сброс раунда атомарно в SW: бамп поколения + очистка очереди/зачёта/журнала/кэшей под lockMovie.
+// gen-бамп под локом сериализуется с markMovieCounted/logMovie → стрэглер прошлого раунда не запишется в новый.
+async function newMovieRound() {
+  movieChat.clear(); seenMsg.clear();
+  const leftover = await lockMovie(async () => {
+    const { moviePending = [] } = await chrome.storage.local.get('moviePending');
+    movieGen++;
+    await chrome.storage.local.set({ moviePending: [], movieCounted: {}, movieJournal: [] });
+    return moviePending; // незавершённые активации прошлого раунда (claim-нутые drain'ом сюда не попадут)
+  });
+  if (leftover.length) { // вернуть баллы по ним, чтобы не зависли в очереди Twitch
+    const s = await chrome.storage.local.get(null);
+    const ctx = ctxFrom(s);
+    for (const p of leftover) await setRedemption(ctx, s.movieRewardId, p.redemptionId, 'CANCELED');
+  }
+  broadcast({ type: 'movie-journal' });
+}
+
+// Подписаться на channel.chat.message на ЖИВОЙ сессии (когда тумблер включили после подключения Twitch).
+async function subscribeMovieChat() {
+  if (!(ws && ws.readyState === WebSocket.OPEN && sessionId)) return; // нет живой сессии — подпишемся при welcome
+  const s = await chrome.storage.local.get(null);
+  try { await subscribeChatMessages(ctxFrom(s), sessionId); }
+  catch (e) { if (e.status !== 409) await logEvent({ ok: false, note: `чат-подписка не удалась (переподключи Twitch для нового доступа): ${e.message}` }); } // 409 = уже подписаны
+}
+
+async function drainMovie() {
+  if (draining) return;
+  draining = true;
+  try {
+    for (;;) {
+      const item = await lockMovie(async () => {
+        const { moviePending = [] } = await chrome.storage.local.get('moviePending');
+        const now = Date.now();
+        const idx = moviePending.findIndex((p) => p.badges !== null || (now - p.at) >= 8000);
+        if (idx < 0) return null;
+        const [it] = moviePending.splice(idx, 1);
+        it.__gen = movieGen; // штамп раунда на момент claim
+        await chrome.storage.local.set({ moviePending });
+        return it;
+      });
+      if (!item) break;
+      await processMovieItem(item).catch(() => {});
+    }
+  } finally { draining = false; }
+}
+
+async function processMovieItem(item) { // { redemptionId, userId, userLogin, movie, badges|null }
+  const s = await chrome.storage.local.get(null);
+  const ctx = ctxFrom(s);
+  const movie = (item.movie || '').trim();
+  const userLogin = item.userLogin || '';
+  const gen = item.__gen; // поколение раунда на момент claim
+  const selected = Array.isArray(s.movieBadges) ? s.movieBadges : [];
+  const keys = selected.map((b) => b.key);
+  // свежие статусы Helix по user_id — только для выбранных типов (параллельно)
+  const status = { subTier: 0, vip: false, mod: false, follower: false };
+  const tasks = [];
+  if (keys.some((k) => k === 'sub1' || k === 'sub2' || k === 'sub3')) tasks.push(getSubTier(ctx, item.userId).then((t) => { status.subTier = t; }).catch(() => {}));
+  if (keys.includes('vip')) tasks.push(isVip(ctx, item.userId).then((v) => { status.vip = v; }).catch(() => {}));
+  if (keys.includes('mod')) tasks.push(isMod(ctx, item.userId).then((v) => { status.mod = v; }).catch(() => {}));
+  if (keys.includes('follower')) tasks.push(isFollower(ctx, item.userId).then((v) => { status.follower = v; }).catch(() => {}));
+  await Promise.all(tasks);
+  const cached = movieChat.get(movieKey(item.userId, item.movie)); // чат мог приехать в кэш после создания pending
+  const applicable = applicableMovieBadges(selected, item.badges || (cached && cached.badges) || [], status);
+  const base = s.movieBase == null ? 1 : (parseInt(s.movieBase, 10) || 0); // get(null) не мерджит DEFAULTS
+  // зачтённое в раунде — из movieCounted (авторитетно, без капа). drainMovie сериализует, гонок нет.
+  const movieCounted = (s.movieCounted && typeof s.movieCounted === 'object') ? s.movieCounted : {};
+  const prior = movieCounted[item.userId];
+  const participated = Array.isArray(prior);
+  const counted = new Set(prior || []);
+  const fresh = applicable.filter((a) => !counted.has(a.key));
+  const amount = base + fresh.reduce((n, a) => n + (Number(a.price) || 0), 0);
+  if (movieGen !== gen) { await setRedemption(ctx, s.movieRewardId, item.redemptionId, 'CANCELED'); return; } // раунд сброшен пока считали → возврат, без записи в новый
+  if (!((fresh.length || !participated) && amount > 0)) { // нет новых значков (уже участвовал) или сумма 0 → возврат
+    const err = await setRedemption(ctx, s.movieRewardId, item.redemptionId, 'CANCELED');
+    return logMovie({ ok: false, refunded: true, userId: item.userId, userLogin, movie, note: err ? `возврат не прошёл: ${err}` : '' }, gen);
+  }
+  let bidErr = '';
+  try { await postBids(s.token, [{ cost: amount, message: movie, username: userLogin, investorId: item.userId, insertStrategy: 'none', isDonation: false }]); }
+  catch (e) { bidErr = e.message; }
+  if (bidErr) { // ставка не ушла → возврат балла; значки НЕ зачтены (можно повторить)
+    const err = await setRedemption(ctx, s.movieRewardId, item.redemptionId, 'CANCELED');
+    return logMovie({ ok: false, refunded: true, userId: item.userId, userLogin, movie, note: `pointauc: ${bidErr}` + (err ? ` · возврат не прошёл: ${err}` : '') }, gen);
+  }
+  if (movieGen !== gen) { await setRedemption(ctx, s.movieRewardId, item.redemptionId, 'CANCELED'); return; } // раунд сбросили во время ставки → возврат балла, без зачёта (стрэглер-ставка уйдёт в очередь pointauc на ручной разбор)
+  await markMovieCounted(item.userId, fresh.map((a) => a.key), gen); // успех → пометить новые значки зачтёнными (если раунд не сброшен)
+  const err = await setRedemption(ctx, s.movieRewardId, item.redemptionId, 'FULFILLED');
+  return logMovie({ ok: true, userId: item.userId, userLogin, movie, badges: fresh.map((a) => ({ key: a.key, price: a.price })), amount, note: err ? `подтверждение Twitch не прошло: ${err}` : '' }, gen);
+}
+
+function markMovieCounted(userId, badgeKeys, gen) { // запоминаем зачтённые ключи (пустой массив тоже создаёт запись → «участвовал»)
+  return lockMovie(async () => {
+    if (gen !== movieGen) return; // раунд сброшен во время обработки — не пишем в новый
+    const { movieCounted = {} } = await chrome.storage.local.get('movieCounted');
+    const set = new Set(movieCounted[userId] || []);
+    for (const k of badgeKeys) set.add(k);
+    movieCounted[userId] = [...set];
+    await chrome.storage.local.set({ movieCounted });
+  });
+}
+
+function logMovie(entry, gen) {
+  return lockMovie(async () => {
+    if (gen != null && gen !== movieGen) return; // стрэглер прошлого раунда — не в новый журнал
+    const { movieJournal = [] } = await chrome.storage.local.get('movieJournal');
+    movieJournal.unshift({ at: Date.now(), ...entry });
+    await chrome.storage.local.set({ movieJournal: movieJournal.slice(0, 200) }); // только показ; зачёт отдельно в movieCounted
+    broadcast({ type: 'movie-journal' });
+  });
+}
+
+chrome.runtime.onStartup?.addListener(() => { ensureListener(); drainMovie(); });
+chrome.runtime.onInstalled?.addListener(() => { ensureListener(); drainMovie(); });
 chrome.alarms?.create('twitch-keepalive', { periodInMinutes: 1 });
-chrome.alarms?.onAlarm.addListener((a) => { if (a.name === 'twitch-keepalive') ensureListener(); });
-ensureListener(); // при загрузке/пробуждении воркера
+chrome.alarms?.onAlarm.addListener((a) => { if (a.name === 'twitch-keepalive') { ensureListener(); drainMovie(); } }); // drainMovie — добивает зависшие активации после сна SW
+ensureListener(); drainMovie(); // при загрузке/пробуждении воркера
