@@ -158,11 +158,15 @@
       <div class="muted" style="font-size:11px; margin:4px 0">
         Награда «Предложить фильм» (1 балл, ввод названия) создаётся тумблером наверху. Ставка = база + сумма цен значков зрителя → в очередь подтверждения pointauc. Считаются только <b>новые</b> значки; повтор без новых → возврат балла; сброс при включении тумблера.
       </div>
-      <div class="row" style="gap:8px; align-items:center; margin:6px 0">
+      <label style="display:block; margin:6px 0 2px">Название награды</label>
+      <input id="movieRewardTitle" type="text" placeholder="Предложить фильм" value="Предложить фильм" />
+      <div class="muted" style="font-size:10px; margin:2px 0 0">Поменял название? Выключи и включи тумблер, чтобы применить на Twitch.</div>
+      <div class="row" style="gap:8px; align-items:center; margin:8px 0 4px">
         <span>База за активацию</span>
         <input id="movieBase" class="mini" type="number" min="0" value="1" />
         <span class="muted" style="font-size:11px">балл(ов) к сумме значков</span>
       </div>
+      <label class="inline"><input id="movieAsDonation" type="checkbox" /> слать как донат (pointauc применит конвертацию деньги→баллы)</label>
       <div class="muted" style="font-size:11px; margin:8px 0 4px">Учитываемые значки (добавь из пула, задай цену):</div>
       <div id="movieBadgeList"></div>
       <div class="row" style="gap:8px; margin-top:6px">

@@ -25,7 +25,8 @@ export const DEFAULTS = {
   // фича «ставка за значки на фильм» (отдельно от соцрейтинга)
   movieBidsActive: false,     // вкл/выкл награды «Предложить фильм»
   movieBase: 1,               // база, прибавляемая к сумме цен значков
-  movieRewardTitle: 'Предложить фильм',
+  movieRewardTitle: 'Предложить фильм', // название награды (редактируется стримером)
+  movieAsDonation: false,     // слать ставку как донат (pointauc применит конвертацию деньги→баллы)
   movieRewardId: '',          // id созданной награды на Twitch
   movieBadges: [],            // выбранные значки с ценами: [{ key, price }]
   moviePending: [],           // незавершённые активации (ждут пары/обработки) — переживают сон SW
@@ -236,6 +237,12 @@ export const MOVIE_BADGE_POOL = [
   { key: 'bits5000', label: 'Биты · 5000+', src: 'chat', setId: 'bits', minVersion: 5000 },
   { key: 'bits10000', label: 'Биты · 10000+', src: 'chat', setId: 'bits', minVersion: 10000 },
   { key: 'founder', label: 'Founder', src: 'chat', setId: 'founder' },
+  { key: 'cliplead1', label: 'Топ-1 клипер', src: 'chat', setId: 'clips-leader', version: '1' },
+  { key: 'cliplead2', label: 'Топ-2 клипер', src: 'chat', setId: 'clips-leader', version: '2' },
+  { key: 'cliplead3', label: 'Топ-3 клипер', src: 'chat', setId: 'clips-leader', version: '3' },
+  { key: 'bitslead1', label: 'Топ-1 по битам', src: 'chat', setId: 'bits-leader', version: '1' },
+  { key: 'bitslead2', label: 'Топ-2 по битам', src: 'chat', setId: 'bits-leader', version: '2' },
+  { key: 'bitslead3', label: 'Топ-3 по битам', src: 'chat', setId: 'bits-leader', version: '3' },
 ];
 
 // Какие из ВЫБРАННЫХ значков есть у зрителя сейчас. selected: [{key,price}];
@@ -269,16 +276,18 @@ export function applicableMovieBadges(selected, chatBadges, status) {
 
 // Генерирует код Apps Script (doPost) с подставленными настройками + секретом.
 // Лист ищется по имени вкладки (sheetName, обязательно); столбцы/строка — из настроек; столбец баллов — pointsCol или отдельный buyPointsCol.
-export function buildAppsScript(s, secret) {
-  const sheetName = (s.sheetName || '').trim();
-  if (!sheetName) throw new Error('Укажи имя листа (вкладки) в настройках.');
+// Какие столбцы/лист зашьются в скрипт при текущих настройках — для сравнения с задеплоенным (детект «скрипт устарел»).
+export function expectedScriptConfig(s) {
   const nickIdx = colToIndex(s.nickCol);
   let ptsIdx = colToIndex((s.buySameCol === false && s.buyPointsCol) ? s.buyPointsCol : s.pointsCol);
   if (ptsIdx < 0) ptsIdx = colToIndex(s.pointsCol); // невалидный столбец покупок → откат на основной
-  if (nickIdx < 0 || ptsIdx < 0) throw new Error('Неверно указан столбец ника/баллов (нужно A, B, … или номер).');
-  const nickCol = nickIdx + 1;
-  const ptsCol = ptsIdx + 1;
-  const firstRow = Math.max(1, parseInt(s.firstRow, 10) || 2);
+  return { nickCol: nickIdx + 1, pointsCol: ptsIdx + 1, firstRow: Math.max(1, parseInt(s.firstRow, 10) || 2), sheetName: (s.sheetName || '').trim() };
+}
+
+export function buildAppsScript(s, secret) {
+  const { nickCol, pointsCol: ptsCol, firstRow, sheetName } = expectedScriptConfig(s);
+  if (!sheetName) throw new Error('Укажи имя листа (вкладки) в настройках.');
+  if (nickCol < 1 || ptsCol < 1) throw new Error('Неверно указан столбец ника/баллов (нужно A, B, … или номер).');
   return [
     '/**',
     ' * PigRating — приём начислений рейтинга (сгенерировано расширением).',
@@ -296,7 +305,7 @@ export function buildAppsScript(s, secret) {
     '  try {',
     '    const b = JSON.parse(e.postData.contents);',
     "    if (b.secret !== SECRET) return out({ ok: false, error: 'bad secret' });",
-    "    if (b.ping) { const ps = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAME); return out({ ok: true, sheet: SHEET_NAME, sheetFound: !!ps }); }", // хелсчек без записи
+    "    if (b.ping) { const ps = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAME); return out({ ok: true, sheet: SHEET_NAME, sheetFound: !!ps, nickCol: NICK_COL, pointsCol: POINTS_COL, firstRow: FIRST_ROW }); }", // столбцы — для детекта «скрипт устарел» // хелсчек без записи
     "    const nick = String(b.nick || '').trim().replace(/^@+/, '');", // убрать ведущий @
     '    const pts  = Number(b.points);',
     "    if (!nick || !isFinite(pts)) return out({ ok: false, error: 'bad input' });",

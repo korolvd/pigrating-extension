@@ -25,7 +25,7 @@ function doPost(e) {
   try {
     const b = JSON.parse(e.postData.contents);
     if (b.secret !== SECRET) return out({ ok: false, error: 'bad secret' });
-    if (b.ping) { const ps = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAME); return out({ ok: true, sheet: SHEET_NAME, sheetFound: !!ps }); } // хелсчек без записи
+    if (b.ping) { const ps = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAME); return out({ ok: true, sheet: SHEET_NAME, sheetFound: !!ps, nickCol: NICK_COL, pointsCol: POINTS_COL, firstRow: FIRST_ROW }); } // хелсчек + столбцы (детект «скрипт устарел»)
     const nick = String(b.nick || '').trim().replace(/^@+/, ''); // убрать ведущий @
     const pts  = Number(b.points);
     if (!nick || !isFinite(pts)) return out({ ok: false, error: 'bad input' });

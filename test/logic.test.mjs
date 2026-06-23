@@ -1,7 +1,7 @@
 // Тесты чистой логики + батчинга. Логика импортируется из ../core.js.
 // Запуск: node test/logic.test.mjs
 
-import { parseCsv, colToIndex, buildPlan, executePlan, resolveChoice, markName, parseMark, buildRollbackPlan, planRollbackPuts, addPoints, buildAppsScript, healthCheck, resolveRedemption, normNick, diceSimilarity, suggestNick, applicableMovieBadges } from '../core.js';
+import { parseCsv, colToIndex, buildPlan, executePlan, resolveChoice, markName, parseMark, buildRollbackPlan, planRollbackPuts, addPoints, buildAppsScript, healthCheck, resolveRedemption, normNick, diceSimilarity, suggestNick, applicableMovieBadges, expectedScriptConfig } from '../core.js';
 import { validateToken, helix, createReward, syncRewards, syncReward, setRewardsEnabled, subscribeRedemptions, updateRedemptionStatus, redemptionEvent, userExists } from '../twitch.js';
 
 let failed = 0;
@@ -213,6 +213,8 @@ eq('buildAppsScript: битый столбец ника → throw', baThrew, tru
 
 const scr3 = buildAppsScript({ sheetName: 'Лист1', nickCol: 'D', pointsCol: 'E', firstRow: 2, buySameCol: false, buyPointsCol: 'F2' }, 's');
 eq('buildAppsScript: мусор в buyPointsCol → откат на pointsCol=5', /const POINTS_COL\s*=\s*5;/.test(scr3), true);
+eq('expectedScriptConfig: отдельный buy-столбец F', expectedScriptConfig({ sheetName: 'Лист1', nickCol: 'D', pointsCol: 'E', firstRow: 2, buySameCol: false, buyPointsCol: 'F' }), { nickCol: 4, pointsCol: 6, firstRow: 2, sheetName: 'Лист1' });
+eq('expectedScriptConfig: тот же столбец (E)', expectedScriptConfig({ sheetName: 'Л', nickCol: 'D', pointsCol: 'E', firstRow: 2, buySameCol: true }).pointsCol, 5);
 eq('buildAppsScript: новый ник — после последнего ника (lastNick+1)', /lastNick \+ 1/.test(scr3) && !/Math\.max\(last/.test(scr3), true);
 eq('buildAppsScript: матч ника без учёта регистра', /toLowerCase\(\) === nick\.toLowerCase\(\)/.test(scr3), true);
 eq('buildAppsScript: @ убирается при матче/записи ника', /replace\(\/\^@\+\//.test(scr3), true);
@@ -258,6 +260,9 @@ eq('applicableMovieBadges: sub3 не сматчится при тире 2', appl
 eq('applicableMovieBadges: невыбранный значок не учитывается', applicableMovieBadges([], MCB, MST).length, 0);
 eq('applicableMovieBadges: цена сохраняется', applicableMovieBadges([{ key: 'vip', price: 77 }], [], { vip: true })[0], { key: 'vip', price: 77 });
 eq('applicableMovieBadges: gifter25 не сматчится при 15 подарках', applicableMovieBadges([{ key: 'gifter25', price: 90 }], [{ set_id: 'sub-gifter', id: '15' }], {}).length, 0);
+eq('applicableMovieBadges: топ-2 клипер (clips-leader/2)', applicableMovieBadges([{ key: 'cliplead2', price: 90 }], [{ set_id: 'clips-leader', id: '2' }], {}).map((x) => x.key), ['cliplead2']);
+eq('applicableMovieBadges: топ-1 клипер не сматчится при ранге 2', applicableMovieBadges([{ key: 'cliplead1', price: 100 }], [{ set_id: 'clips-leader', id: '2' }], {}).length, 0);
+eq('applicableMovieBadges: топ-1 по битам (bits-leader/1)', applicableMovieBadges([{ key: 'bitslead1', price: 70 }], [{ set_id: 'bits-leader', id: '1' }], {}).map((x) => x.key), ['bitslead1']);
 
 // ───────── 7) Twitch: validateToken + helix ─────────
 globalThis.fetch = async (url, opts = {}) => ({ ok: true, status: 200, json: async () => ({ client_id: 'cid', login: 'streamer', user_id: '123', scopes: ['channel:manage:redemptions'] }) });

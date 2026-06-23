@@ -438,7 +438,7 @@ async function processMovieItem(item) { // { redemptionId, userId, userLogin, mo
     return logMovie({ ok: false, refunded: true, userId: item.userId, userLogin, movie, note: err ? `возврат не прошёл: ${err}` : '' }, gen);
   }
   let bidErr = '';
-  try { await postBids(s.token, [{ cost: amount, message: movie, username: userLogin, investorId: item.userId, insertStrategy: 'none', isDonation: false }]); }
+  try { await postBids(s.token, [{ cost: amount, message: movie, username: userLogin, investorId: item.userId, insertStrategy: 'none', isDonation: !!s.movieAsDonation }]); }
   catch (e) { bidErr = e.message; }
   if (bidErr) { // ставка не ушла → возврат балла; значки НЕ зачтены (можно повторить)
     const err = await setRedemption(ctx, s.movieRewardId, item.redemptionId, 'CANCELED');
