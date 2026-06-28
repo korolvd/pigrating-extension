@@ -130,3 +130,45 @@ td.num { text-align: right; font-variant-numeric: tabular-nums; }
 .pos { color: #6fcf97; }
 
 footer { margin-top: 10px; color: var(--muted); font-size: 11px; }
+
+/* ── редизайн: шапка PigPoints + модули «источники ставок» ── */
+.app-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.brand { display: flex; align-items: center; gap: 9px; flex: 1; min-width: 0; }
+.pig { font-size: 24px; line-height: 1; flex: none; }
+.pig.sm { font-size: 17px; }
+.brand-text { min-width: 0; }
+.brand-name { font-size: 16px; font-weight: 600; display: block; line-height: 1.15; }
+.brand-tag { font-size: 11px; color: var(--muted); display: block; }
+.iconbtn { background: transparent; border: none; color: var(--muted); cursor: pointer; padding: 4px; flex: none; }
+.iconbtn:hover { color: var(--text); }
+.iconbtn .ic { width: 19px; height: 19px; }
+.tagline-mini { margin-left: auto; font-size: 10px; color: #7a818f; align-self: center; white-space: nowrap; }
+.sources-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; font-weight: 600; margin: 12px 0 8px; }
+.module { padding: 11px 12px; }
+.module-flag { border-color: #4a3a6b; }
+.mod-head { display: flex; align-items: center; gap: 9px; }
+details.module > summary.mod-head { margin-bottom: 0; }
+details.module[open] > summary.mod-head { margin-bottom: 8px; }
+.mod-ic { width: 19px; height: 19px; }
+.mod-name { font-weight: 600; flex: 1; font-size: 14px; min-width: 0; }
+.mod-badge { font-size: 10px; color: #c9a8ff; background: #2a2150; border-radius: 8px; padding: 1px 7px; flex: none; }
+.mod-desc { font-size: 11px; color: var(--muted); margin: 5px 0 9px; }
+.mod-hint { font-size: 11px; color: var(--warn); margin: 2px 0 6px; line-height: 1.35; }
+/* значки (картинки Twitch) + кастомный пикер */
+.badge-ic { width: 18px; height: 18px; flex: none; vertical-align: middle; object-fit: contain; border-radius: 3px; }
+.badge-none { display: inline-flex; align-items: center; justify-content: center; color: var(--muted); font-size: 11px; }
+.badge-picker { position: relative; display: inline-block; }
+.badge-menu { position: absolute; z-index: 30; top: 100%; left: 0; margin-top: 4px; min-width: 230px; max-height: 320px; overflow-y: auto; background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 4px; box-shadow: 0 8px 22px rgba(0,0,0,.45); }
+.badge-opt { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; background: transparent; border: none; color: var(--text); padding: 5px 8px; border-radius: 6px; font-weight: 400; cursor: pointer; }
+.badge-opt:hover { background: #1f2430; }
+.badge-opt-label { flex: 1; min-width: 0; font-size: 12px; }
+.mod-row { display: flex; align-items: center; gap: 14px; }
+.mod-sub { display: flex; align-items: center; gap: 9px; padding: 7px 0; }
+.mod-sub .ic { width: 16px; height: 16px; flex: none; }
+.mod-sub-name { flex: 1; font-size: 13px; min-width: 0; }
+.mod-divider { border-top: 1px solid var(--border); margin: 6px 0 9px; }
+.subcard { margin-top: 6px; background: #12161e; border: 1px solid var(--border); border-radius: 6px; padding: 7px 9px; }
+.subcard > summary { font-size: 12px; font-weight: 500; color: var(--muted); }
+.subhead { font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; margin: 14px 0 4px; }
+.infocard { font-size: 11px; line-height: 1.5; color: var(--muted); background: #12161e; border: 1px solid var(--border); border-left: 3px solid var(--warn); border-radius: 6px; padding: 7px 9px; margin: 8px 0 4px; }
+.infocard b { color: var(--text); font-weight: 600; }

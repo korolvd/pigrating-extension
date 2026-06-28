@@ -132,6 +132,21 @@ export async function isFollower(ctx, userId) {
   return Array.isArray(r.data) && r.data.length > 0;
 }
 
+// Картинки чат-значков: глобальные + значки канала → карта { set_id: { version_id: image_url } }.
+// Без спец-скоупа. Значки канала переопределяют глобальные (фетчим global первым). Для показа в пуле «ставки за значки».
+export async function getChatBadges(ctx) {
+  const [glob, chan] = await Promise.all([
+    helix('/chat/badges/global', { clientId: ctx.clientId, token: ctx.token }).catch(() => ({ data: [] })),
+    helix('/chat/badges', { clientId: ctx.clientId, token: ctx.token, query: { broadcaster_id: ctx.broadcasterId } }).catch(() => ({ data: [] })),
+  ]);
+  const map = {};
+  for (const set of [...(glob.data || []), ...(chan.data || [])]) {
+    const byVer = map[set.set_id] || (map[set.set_id] = {});
+    for (const v of (set.versions || [])) byVer[v.id] = v.image_url_2x || v.image_url_1x || v.image_url_4x;
+  }
+  return map;
+}
+
 // Подписка на сообщения чата (для фичи «ставка за значки»: значки + текст приходят в сообщении награды с вводом).
 export function subscribeChatMessages(ctx, sessionId) {
   return helix('/eventsub/subscriptions', {

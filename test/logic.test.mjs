@@ -1,7 +1,7 @@
 // Тесты чистой логики + батчинга. Логика импортируется из ../core.js.
 // Запуск: node test/logic.test.mjs
 
-import { parseCsv, colToIndex, buildPlan, executePlan, resolveChoice, markName, parseMark, buildRollbackPlan, planRollbackPuts, addPoints, buildAppsScript, healthCheck, resolveRedemption, normNick, diceSimilarity, suggestNick, applicableMovieBadges, expectedScriptConfig } from '../core.js';
+import { parseCsv, colToIndex, buildPlan, executePlan, resolveChoice, markName, parseMark, buildRollbackPlan, planRollbackPuts, addPoints, buildAppsScript, healthCheck, resolveRedemption, normNick, diceSimilarity, suggestNick, applicableMovieBadges, expectedScriptConfig, findMovieLot, moviePointsDecision, movieBadgeImage, MOVIE_BADGE_POOL } from '../core.js';
 import { validateToken, helix, createReward, syncRewards, syncReward, setRewardsEnabled, subscribeRedemptions, updateRedemptionStatus, redemptionEvent, userExists } from '../twitch.js';
 
 let failed = 0;
@@ -41,7 +41,7 @@ const lots = [
   { id: 'l3', fastId: 3, name: 'kedi', amount: 10, investors: ['multi'] },
   { id: 'l4', fastId: 4, name: 'шапито шоу', amount: 10, investors: ['multi'] },
 ];
-const settings = { newLotPrefix: '[СОЦ] ', allowNegative: true, skipZero: true };
+const settings = { newLotPrefix: '[PP] ', allowNegative: true, skipZero: true };
 const testRows = [
   { nick: 'Nik', rawPoints: '10', points: 10 },        // единственный вкладчик l1 → update
   { nick: 'nagibator', rawPoints: '0', points: 0 },    // ноль → skip
@@ -50,7 +50,7 @@ const testRows = [
   { nick: 'MULTI', rawPoints: '8', points: 8 },        // в 2 лотах → resolve
 ];
 const plan = buildPlan(testRows, lots, settings);
-eq('plan: Nik → update в l1 (fastId+метка с суммой)', { a: plan[0].action, id: plan[0].lotId, f: plan[0].fastId, inv: plan[0].investor }, { a: 'update', id: 'l1', f: 1, inv: '[СОЦ] Nik:10' });
+eq('plan: Nik → update в l1 (fastId+метка с суммой)', { a: plan[0].action, id: plan[0].lotId, f: plan[0].fastId, inv: plan[0].investor }, { a: 'update', id: 'l1', f: 1, inv: '[PP] Nik:10' });
 eq('plan: nagibator → skip', plan[1].action, 'skip');
 eq('plan: isDonation по умолчанию false', plan[0].isDonation, false);
 eq('plan: asDonation:true → isDonation true', buildPlan([{ nick: 'Nik', rawPoints: '10', points: 10 }], lots, { ...settings, asDonation: true })[0].isDonation, true);
@@ -61,15 +61,15 @@ eq('plan: resolve кандидаты с fastId', plan[4].candidates.map((c) => `
 
 // resolveChoice: кандидат → update (fastId+investor); новый лот → create; пропуск → skip; любой лот через lotsById
 const multiItem = plan[4]; // MULTI, points 8, кандидаты l3(kedi)/l4(шапито шоу)
-eq('resolve → кандидат = update', (() => { const r = resolveChoice(multiItem, 'l3', '[СОЦ] '); return { a: r.action, id: r.lotId, f: r.fastId, t: r.target, inv: r.investor }; })(), { a: 'update', id: 'l3', f: 3, t: 'kedi', inv: '[СОЦ] MULTI:8' });
-eq('resolve → new = create с приставкой', (() => { const r = resolveChoice(multiItem, 'new', '[СОЦ] '); return { a: r.action, t: r.target, inv: r.investor }; })(), { a: 'create', t: '[СОЦ] MULTI', inv: '[СОЦ] MULTI:8' });
+eq('resolve → кандидат = update', (() => { const r = resolveChoice(multiItem, 'l3', '[PP] '); return { a: r.action, id: r.lotId, f: r.fastId, t: r.target, inv: r.investor }; })(), { a: 'update', id: 'l3', f: 3, t: 'kedi', inv: '[PP] MULTI:8' });
+eq('resolve → new = create с приставкой', (() => { const r = resolveChoice(multiItem, 'new', '[PP] '); return { a: r.action, t: r.target, inv: r.investor }; })(), { a: 'create', t: '[PP] MULTI', inv: '[PP] MULTI:8' });
 eq('resolve → skip = action skip', resolveChoice(multiItem, 'skip').action, 'skip');
-eq('resolve → произвольный лот (lotsById)', (() => { const r = resolveChoice(plan[3], 'l1', '[СОЦ] ', { l1: { id: 'l1', fastId: 1, name: 'Эрго прокси' } }); return { a: r.action, f: r.fastId, t: r.target }; })(), { a: 'update', f: 1, t: 'Эрго прокси' });
+eq('resolve → произвольный лот (lotsById)', (() => { const r = resolveChoice(plan[3], 'l1', '[PP] ', { l1: { id: 'l1', fastId: 1, name: 'Эрго прокси' } }); return { a: r.action, f: r.fastId, t: r.target }; })(), { a: 'update', f: 1, t: 'Эрго прокси' });
 
-// Метки [СОЦ] не считаются вкладчиками + детект «уже залито»
+// Метки [PP] не считаются вкладчиками + детект «уже залито»
 const markedLots = [
-  { id: 'm1', fastId: 9, name: 'Half-Life 2', amount: 907, investors: ['2BeFirefly', '[СОЦ] 2BeFirefly:100'] },
-  { id: 'm2', fastId: 8, name: 'Solo', amount: 50, investors: ['solo', '[СОЦ] other:5'] },
+  { id: 'm1', fastId: 9, name: 'Half-Life 2', amount: 907, investors: ['2BeFirefly', '[PP] 2BeFirefly:100'] },
+  { id: 'm2', fastId: 8, name: 'Solo', amount: 50, investors: ['solo', '[PP] other:5'] },
 ];
 const planMark = buildPlan([{ nick: '2BeFirefly', rawPoints: '5', points: 5 }, { nick: 'solo', rawPoints: '5', points: 5 }], markedLots, settings);
 eq('plan: уже залито → resolve + applied', { a: planMark[0].action, ap: planMark[0].applied }, { a: 'resolve', ap: true });
@@ -88,21 +88,21 @@ eq('plan: минус выкл, ghost → skip', planNoNeg[0].action, 'skip');
 eq('plan: минус выкл, fincher → skip', planNoNeg[1].action, 'skip');
 
 // ───────── 2b) Метка: формат и парсинг ─────────
-eq('markName', markName('[СОЦ] ', 'Nik', 10), '[СОЦ] Nik:10');
-eq('parseMark: ник+сумма', parseMark('[СОЦ] Nik:10', '[СОЦ] '), { nick: 'Nik', amount: 10 });
-eq('parseMark: минус', parseMark('[СОЦ] maxxsxsx:-10', '[СОЦ] '), { nick: 'maxxsxsx', amount: -10 });
-eq('parseMark: ник с пробелом/слэшем', parseMark('[СОЦ] dedus / honey:9', '[СОЦ] '), { nick: 'dedus / honey', amount: 9 });
-eq('parseMark: не метка → null', parseMark('2BeFirefly', '[СОЦ] '), null);
-eq('parseMark: старый формат без суммы → ник, amount NaN', parseMark('[СОЦ] old', '[СОЦ] ').nick, 'old');
+eq('markName', markName('[PP] ', 'Nik', 10), '[PP] Nik:10');
+eq('parseMark: ник+сумма', parseMark('[PP] Nik:10', '[PP] '), { nick: 'Nik', amount: 10 });
+eq('parseMark: минус', parseMark('[PP] maxxsxsx:-10', '[PP] '), { nick: 'maxxsxsx', amount: -10 });
+eq('parseMark: ник с пробелом/слэшем', parseMark('[PP] dedus / honey:9', '[PP] '), { nick: 'dedus / honey', amount: 9 });
+eq('parseMark: не метка → null', parseMark('2BeFirefly', '[PP] '), null);
+eq('parseMark: старый формат без суммы → ник, amount NaN', parseMark('[PP] old', '[PP] ').nick, 'old');
 
 // ───────── 2c) Откат: сбор и группировка ─────────
 const rbLots = [
-  { id: 'l1', fastId: 1, name: 'Half-Life 2', amount: 900, investors: ['2BeFirefly', '[СОЦ] 2BeFirefly:100'] },
-  { id: 'l2', fastId: 2, name: 'INSIDE', amount: 190, investors: ['maxxsxsx', '[СОЦ] maxxsxsx:-10'] },
+  { id: 'l1', fastId: 1, name: 'Half-Life 2', amount: 900, investors: ['2BeFirefly', '[PP] 2BeFirefly:100'] },
+  { id: 'l2', fastId: 2, name: 'INSIDE', amount: 190, investors: ['maxxsxsx', '[PP] maxxsxsx:-10'] },
   { id: 'l3', fastId: 3, name: 'Plain', amount: 50, investors: ['realguy'] },
-  { id: 'l4', fastId: 4, name: 'Shared', amount: 300, investors: ['real', '[СОЦ] a:50', '[СОЦ] b:30'] },
+  { id: 'l4', fastId: 4, name: 'Shared', amount: 300, investors: ['real', '[PP] a:50', '[PP] b:30'] },
 ];
-const rb = buildRollbackPlan(rbLots, '[СОЦ] ');
+const rb = buildRollbackPlan(rbLots, '[PP] ');
 eq('rollback: найдено 4 метки', rb.length, 4);
 eq('rollback: метка HL2', { lot: rb[0].lotName, nick: rb[0].nick, amount: rb[0].amount }, { lot: 'Half-Life 2', nick: '2BeFirefly', amount: 100 });
 eq('rollback: метка INSIDE минус', { nick: rb[1].nick, amount: rb[1].amount }, { nick: 'maxxsxsx', amount: -10 });
@@ -112,8 +112,8 @@ eq('rollback PUT HL2: 900-100=800, без метки', (() => { const p = putsAl
 eq('rollback PUT INSIDE: минус назад → 190-(-10)=200', putsAll.find((x) => x.lotId === 'l2').amount, 200);
 eq('rollback PUT Shared: 2 метки в одном лоте → 300-80=220', (() => { const p = putsAll.find((x) => x.lotId === 'l4'); return { amt: p.amount, inv: p.investors }; })(), { amt: 220, inv: ['real'] });
 // выборочный откат: только одна метка из Shared
-const putsOne = planRollbackPuts([rb.find((x) => x.investor === '[СОЦ] a:50')], rbLots);
-eq('rollback выборочно: снять только [СОЦ] a:50 → 300-50=250, остаётся b', (() => { const p = putsOne[0]; return { amt: p.amount, inv: p.investors }; })(), { amt: 250, inv: ['real', '[СОЦ] b:30'] });
+const putsOne = planRollbackPuts([rb.find((x) => x.investor === '[PP] a:50')], rbLots);
+eq('rollback выборочно: снять только [PP] a:50 → 300-50=250, остаётся b', (() => { const p = putsOne[0]; return { amt: p.amount, inv: p.investors }; })(), { amt: 250, inv: ['real', '[PP] b:30'] });
 
 // ───────── 3) executePlan: всё ставками одним POST (мок fetch) ─────────
 const calls = [];
@@ -124,9 +124,9 @@ globalThis.fetch = async (url, opts = {}) => {
 
 // готовый план (как после резолва): update(#1) + 2 create + skip; инвестор-метка у всех
 const execPlan = [
-  { nick: 'Nik', points: 10, action: 'update', fastId: 1, target: 'Эрго прокси', investor: '[СОЦ] Nik', isDonation: true },
-  { nick: 'a', points: 5, action: 'create', target: '[СОЦ] a', investor: '[СОЦ] a' },
-  { nick: 'b', points: -3, action: 'create', target: '[СОЦ] b', investor: '[СОЦ] b' },
+  { nick: 'Nik', points: 10, action: 'update', fastId: 1, target: 'Эрго прокси', investor: '[PP] Nik', isDonation: true },
+  { nick: 'a', points: 5, action: 'create', target: '[PP] a', investor: '[PP] a' },
+  { nick: 'b', points: -3, action: 'create', target: '[PP] b', investor: '[PP] b' },
   { nick: 'c', points: 3, action: 'skip' },
 ];
 await executePlan('TOKEN', execPlan);
@@ -136,8 +136,8 @@ const posts = calls.filter((c) => c.method === 'POST' && c.url.endsWith('/bids')
 eq('exec: PUT не используется', puts.length, 0);
 eq('exec: ровно один POST /bids', posts.length, 1);
 eq('exec: в батче 3 ставки (update + 2 create)', posts[0].body.bids.length, 3);
-eq('exec: update-ставка = #fastId + match + метка', { msg: posts[0].body.bids[0].message, s: posts[0].body.bids[0].insertStrategy, inv: posts[0].body.bids[0].investorId }, { msg: '#1', s: 'match', inv: '[СОЦ] Nik' });
-eq('exec: create-ставка = имя + force + метка', { msg: posts[0].body.bids[1].message, s: posts[0].body.bids[1].insertStrategy, inv: posts[0].body.bids[1].investorId }, { msg: '[СОЦ] a', s: 'force', inv: '[СОЦ] a' });
+eq('exec: update-ставка = #fastId + match + метка', { msg: posts[0].body.bids[0].message, s: posts[0].body.bids[0].insertStrategy, inv: posts[0].body.bids[0].investorId }, { msg: '#1', s: 'match', inv: '[PP] Nik' });
+eq('exec: create-ставка = имя + force + метка', { msg: posts[0].body.bids[1].message, s: posts[0].body.bids[1].insertStrategy, inv: posts[0].body.bids[1].investorId }, { msg: '[PP] a', s: 'force', inv: '[PP] a' });
 eq('exec: isDonation прокидывается (Nik true, a false)', { nik: posts[0].body.bids[0].isDonation, a: posts[0].body.bids[1].isDonation }, { nik: true, a: false });
 eq('exec: статусы update/create = ok', execPlan.filter((it) => it.status === 'ok').length, 3);
 eq('exec: skip остаётся skip', execPlan.filter((it) => it.status === 'skip').length, 1);
@@ -263,6 +263,54 @@ eq('applicableMovieBadges: gifter25 не сматчится при 15 подар
 eq('applicableMovieBadges: топ-2 клипер (clips-leader/2)', applicableMovieBadges([{ key: 'cliplead2', price: 90 }], [{ set_id: 'clips-leader', id: '2' }], {}).map((x) => x.key), ['cliplead2']);
 eq('applicableMovieBadges: топ-1 клипер не сматчится при ранге 2', applicableMovieBadges([{ key: 'cliplead1', price: 100 }], [{ set_id: 'clips-leader', id: '2' }], {}).length, 0);
 eq('applicableMovieBadges: топ-1 по битам (bits-leader/1)', applicableMovieBadges([{ key: 'bitslead1', price: 70 }], [{ set_id: 'bits-leader', id: '1' }], {}).map((x) => x.key), ['bitslead1']);
+eq('applicableMovieBadges: артист (artist-badge по наличию)', applicableMovieBadges([{ key: 'artist', price: 50 }], [{ set_id: 'artist-badge', id: '1' }], {}).map((x) => x.key), ['artist']);
+eq('applicableMovieBadges: артист отсутствует → пусто', applicableMovieBadges([{ key: 'artist', price: 50 }], [], {}).length, 0);
+eq('applicableMovieBadges: кондуктор хайп-трейна (текущий v1)', applicableMovieBadges([{ key: 'hypetrain', price: 40 }], [{ set_id: 'hype-train', id: '1' }], {}).map((x) => x.key), ['hypetrain']);
+eq('applicableMovieBadges: кондуктор хайп-трейна (бывший v2 тоже учитывается)', applicableMovieBadges([{ key: 'hypetrain', price: 40 }], [{ set_id: 'hype-train', id: '2' }], {}).map((x) => x.key), ['hypetrain']);
+
+// ───────── 6д) movieBadgeImage: маппинг значка → картинка Twitch ─────────
+const BMAP = {
+  vip: { '1': 'vip1.png' }, moderator: { '1': 'mod1.png' }, subscriber: { '0': 'sub0.png', '3': 'sub3.png' },
+  'sub-gift-leader': { '1': 'gl1.png', '2': 'gl2.png' }, 'sub-gifter': { '1': 'g1.png', '5': 'g5.png' },
+  founder: { '0': 'f0.png' }, 'artist-badge': { '1': 'art1.png' }, 'hype-train': { '1': 'ht1.png', '2': 'ht2.png' },
+};
+const poolBy = (k) => MOVIE_BADGE_POOL.find((p) => p.key === k);
+eq('badgeImage: vip → vip v1', movieBadgeImage(poolBy('vip'), BMAP), 'vip1.png');
+eq('badgeImage: mod → moderator v1', movieBadgeImage(poolBy('mod'), BMAP), 'mod1.png');
+eq('badgeImage: sub1 → базовая subscriber (тир в значке нет)', movieBadgeImage(poolBy('sub1'), BMAP), 'sub0.png');
+eq('badgeImage: follower → null (значка нет)', movieBadgeImage(poolBy('follower'), BMAP), null);
+eq('badgeImage: giftlead2 → версия 2', movieBadgeImage(poolBy('giftlead2'), BMAP), 'gl2.png');
+eq('badgeImage: gifter5 → порог 5', movieBadgeImage(poolBy('gifter5'), BMAP), 'g5.png');
+eq('badgeImage: founder → по наличию', movieBadgeImage(poolBy('founder'), BMAP), 'f0.png');
+eq('badgeImage: artist → по наличию', movieBadgeImage(poolBy('artist'), BMAP), 'art1.png');
+eq('badgeImage: hypetrain → v1 по наличию', movieBadgeImage(poolBy('hypetrain'), BMAP), 'ht1.png');
+eq('badgeImage: нет в карте → null', movieBadgeImage(poolBy('cliplead1'), BMAP), null);
+eq('badgeImage: пустая карта → null', movieBadgeImage(poolBy('vip'), {}), null);
+
+// ───────── 6г) findMovieLot + moviePointsDecision: соцрейтинг в ставке за значки ─────────
+const MLOTS = [
+  { id: 'a', name: 'Дюна', investors: ['vasya'] },
+  { id: 'b', name: 'Матрица', investors: ['petya', 'kolya'] },
+  { id: 'c', name: 'Один дома', investors: ['[СОЦРЕЙТИНГ] x:5', 'masha'] },
+];
+const pick = (r) => ({ isNew: r.isNew, isSole: r.isSole });
+eq('findMovieLot: нет на доске → новый', pick(findMovieLot(MLOTS, 'Интерстеллар', 'vasya', '[СОЦРЕЙТИНГ] ')), { isNew: true, isSole: false });
+eq('findMovieLot: существует, единственный вкладчик', pick(findMovieLot(MLOTS, 'Дюна', 'vasya', '[СОЦРЕЙТИНГ] ')), { isNew: false, isSole: true });
+eq('findMovieLot: фаззи/регистр — «дюна» матчит «Дюна»', findMovieLot(MLOTS, 'дюна', 'vasya', '[СОЦРЕЙТИНГ] ').isNew, false);
+eq('findMovieLot: есть другие вкладчики → не единственный', pick(findMovieLot(MLOTS, 'Матрица', 'petya', '[СОЦРЕЙТИНГ] ')), { isNew: false, isSole: false });
+eq('findMovieLot: зритель не вкладчик существующего → не единственный', pick(findMovieLot(MLOTS, 'Матрица', 'vasya', '[СОЦРЕЙТИНГ] ')), { isNew: false, isSole: false });
+eq('findMovieLot: метка [СОЦРЕЙТИНГ] не вкладчик → единственный (masha)', pick(findMovieLot(MLOTS, 'Один дома', 'masha', '[СОЦРЕЙТИНГ] ')), { isNew: false, isSole: true });
+
+eq('moviePointsDecision: плюс — всегда', moviePointsDecision({ points: 5, usePoints: true, alreadyApplied: false, lot: null }), { value: 5, ownership: 'plus', reason: '' });
+eq('moviePointsDecision: минус в новый лот — применяется', moviePointsDecision({ points: -7, usePoints: true, alreadyApplied: false, lot: { isNew: true } }), { value: -7, ownership: 'new', reason: '' });
+eq('moviePointsDecision: минус, единственный вкладчик — применяется', moviePointsDecision({ points: -7, usePoints: true, alreadyApplied: false, lot: { isNew: false, isSole: true } }), { value: -7, ownership: 'sole', reason: '' });
+eq('moviePointsDecision: минус в чужой (поддув) → 0', moviePointsDecision({ points: -7, usePoints: true, alreadyApplied: false, lot: { isNew: false, isSole: false } }).value, 0);
+eq('moviePointsDecision: галка выкл (dropNegForeign=false) → минус везде', moviePointsDecision({ points: -7, usePoints: true, alreadyApplied: false, lot: { isNew: false, isSole: false }, dropNegForeign: false }), { value: -7, ownership: 'minus', reason: '' });
+eq('moviePointsDecision: минус, доска недоступна → 0/unknown', moviePointsDecision({ points: -7, usePoints: true, alreadyApplied: false, lot: { error: true } }), { value: 0, ownership: 'unknown', reason: 'минус не применён: доска недоступна' });
+eq('moviePointsDecision: выкл → 0', moviePointsDecision({ points: 5, usePoints: false, alreadyApplied: false, lot: null }).value, 0);
+eq('moviePointsDecision: уже учтён в раунде → 0', moviePointsDecision({ points: 5, usePoints: true, alreadyApplied: true, lot: null }).value, 0);
+eq('moviePointsDecision: рейтинг 0 → 0', moviePointsDecision({ points: 0, usePoints: true, alreadyApplied: false, lot: null }).value, 0);
+eq('moviePointsDecision: NaN рейтинг → 0', moviePointsDecision({ points: NaN, usePoints: true, alreadyApplied: false, lot: null }).value, 0);
 
 // ───────── 7) Twitch: validateToken + helix ─────────
 globalThis.fetch = async (url, opts = {}) => ({ ok: true, status: 200, json: async () => ({ client_id: 'cid', login: 'streamer', user_id: '123', scopes: ['channel:manage:redemptions'] }) });

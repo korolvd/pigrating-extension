@@ -1,6 +1,8 @@
-import { DEFAULTS, fetchSheetRows, getLots, buildPlan, resolveChoice, buildRollbackPlan, parseSheetRef, buildAppsScript, healthCheck, normNick, MOVIE_BADGE_POOL, expectedScriptConfig } from './core.js';
-import { connectTwitch, syncRewards, syncReward, setRewardsEnabled, deleteReward, updateReward, DEFAULT_TWITCH_CLIENT_ID } from './twitch.js';
+import { DEFAULTS, LOT_PREFIX, fetchSheetRows, getLots, buildPlan, resolveChoice, buildRollbackPlan, parseSheetRef, buildAppsScript, healthCheck, normNick, MOVIE_BADGE_POOL, movieBadgeImage, expectedScriptConfig } from './core.js';
+import { connectTwitch, syncRewards, syncReward, setRewardsEnabled, deleteReward, updateReward, getChatBadges, DEFAULT_TWITCH_CLIENT_ID } from './twitch.js';
 
+// ⚠️ DEPRECATED (на удаление) — ручной залив PigPoints из таблицы в лоты pointauc (Предпросмотр/Применить/Откатить).
+// UI убран, слушатели сняты → функции ниже не вызываются. Логика залива в core.js/background.js помечена так же.
 let currentPlan = null;       // план залива (предпросмотр)
 let currentSettings = null;   // настройки на момент предпросмотра/отката
 let currentLots = [];         // лоты на момент предпросмотра
@@ -64,7 +66,7 @@ function renderApply(plan, withStatus) {
 
 // ───────────────────────── таблица отката ─────────────────────────
 function renderRoll(items) {
-  if (!items.length) { $('result').innerHTML = '<div class="muted" style="margin:8px 0">Меток рейтинга на доске нет — откатывать нечего.</div>'; return; }
+  if (!items.length) { $('result').innerHTML = '<div class="muted" style="margin:8px 0">Меток PigPoints на доске нет — откатывать нечего.</div>'; return; }
   const rows = items.map((it, i) => {
     const d = -it.amount; // изменение суммы лота при снятии
     return `<tr>
@@ -93,14 +95,14 @@ async function showLastApplied() {
   $('lastApplied').textContent = lastApplied ? `Последнее применение: ${new Date(lastApplied.at).toLocaleString()} — изменено ${lastApplied.count}` : '';
 }
 
-// «Откатить» активна только если на доске есть метки рейтинга (+ показывает их число).
+// «Откатить» активна только если на доске есть метки PigPoints (+ показывает их число).
 // Доска обновляется с задержкой → если сразу после залива/отката меток 0, перепроверяем.
 async function refreshRollbackButton(retries = 2) {
   const btn = $('rollback');
   const s = await loadSettings();
   if (!s.token) { btn.disabled = true; setLabel('rollback', 'Откатить'); return; }
   try {
-    const n = buildRollbackPlan(await getLots(s.token), s.newLotPrefix).length;
+    const n = buildRollbackPlan(await getLots(s.token)).length;
     btn.disabled = n === 0;
     setLabel('rollback', n ? `Откатить (${n})` : 'Откатить');
     if (n === 0 && retries > 0) setTimeout(() => refreshRollbackButton(retries - 1), 800);
@@ -129,7 +131,7 @@ async function onPreview() {
 }
 
 function finalize() {
-  const prefix = (currentSettings && currentSettings.newLotPrefix) || '';
+  const prefix = LOT_PREFIX;
   const lotsById = Object.fromEntries(currentLots.map((l) => [String(l.id), l]));
   return (currentPlan || []).map((it, idx) => {
     if (it.action !== 'resolve') return it;
@@ -175,9 +177,9 @@ async function onRollback() {
   try {
     const lots = await getLots(s.token);
     currentLots = lots;
-    currentRollback = buildRollbackPlan(lots, s.newLotPrefix);
+    currentRollback = buildRollbackPlan(lots);
     renderRoll(currentRollback);
-    setStatus(currentRollback.length ? `Меток на доске: ${currentRollback.length}. Отметь и сними.` : 'Меток рейтинга нет.', 'ok');
+    setStatus(currentRollback.length ? `Меток на доске: ${currentRollback.length}. Отметь и сними.` : 'Меток PigPoints нет.', 'ok');
   } catch (e) { setStatus(e.message, 'error'); }
 }
 
@@ -200,7 +202,7 @@ async function undoNick(nick) {
   setStatus(`Откатываю ${nick}…`);
   try {
     const lots = await getLots(s.token);
-    const items = buildRollbackPlan(lots, s.newLotPrefix).filter((it) => norm(it.nick) === norm(nick));
+    const items = buildRollbackPlan(lots).filter((it) => norm(it.nick) === norm(nick));
     if (!items.length) return setStatus(`У «${nick}» нет меток для отката.`);
     const resp = await chrome.runtime.sendMessage({ type: 'rollback', items });
     if (resp?.error) throw new Error(resp.error);
@@ -221,8 +223,6 @@ function readSettingsFromForm() {
     firstRow: Math.max(1, parseInt($('firstRow').value, 10) || 1),
     nickCol: $('nickCol').value.trim().toUpperCase() || 'A',
     pointsCol: $('pointsCol').value.trim().toUpperCase() || 'B',
-    newLotPrefix: $('newLotPrefix').value,
-    allowNegative: $('allowNegative').checked, skipZero: $('skipZero').checked, asDonation: $('asDonation').checked,
     webAppUrl: $('webAppUrl').value.trim(), webAppSecret: $('webAppSecret').value.trim(),
     buySameCol: $('buySameCol').checked, buyPointsCol: $('buyPointsCol').value.trim().toUpperCase(),
   };
@@ -246,7 +246,7 @@ function renderStatusStrip(s) {
     chipHtml('pointauc', s.token ? 'ok' : 'off', 'token'),
     chipHtml('таблица', (s.sheetUrl && s.sheetName) ? 'ok' : 'off', 'sheetUrl'),
     chipHtml('веб-апп', webappState, 'webAppUrl'),
-    chipHtml(s.twitchLogin || 'Twitch', s.twitchToken ? 'ok' : 'off', 'twitchClientId', 'ic-twitch', '#a970ff'),
+    chipHtml(s.twitchLogin || 'Twitch', s.twitchToken ? 'ok' : 'off', 'twitchConnect', 'ic-twitch', '#a970ff'),
   ].join('');
 }
 async function refreshStrip() { renderStatusStrip(await loadSettings()); }
@@ -270,7 +270,7 @@ async function runHealthCheck() {
   refreshStrip();
 }
 
-// ── маппинг наград Twitch → рейтинг (динамические строки таблицы) ──
+// ── маппинг наград Twitch → PigPoints (динамические строки таблицы) ──
 let rmapTimer;
 let movieTimer;
 function escapeHtml(s) { return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
@@ -331,10 +331,16 @@ async function onToggleRewards() {
 }
 
 // ── фича «ставка за значки на фильм» ──
+let badgeImgMap = {}; // set_id→version→url из Twitch Helix (getChatBadges); грузится при подключённом Twitch
+function badgeImgHtml(pool) {
+  const url = pool ? movieBadgeImage(pool, badgeImgMap) : null;
+  return url ? `<img class="badge-ic" src="${escapeHtml(url)}" alt="" loading="lazy" />` : '<span class="badge-ic badge-none" title="нет значка Twitch">—</span>';
+}
 function movieBadgeRowHtml(b) {
   const pool = MOVIE_BADGE_POOL.find((p) => p.key === b.key);
   return `<div class="row mbadge-row" data-key="${escapeHtml(b.key)}" style="gap:8px; align-items:center; padding:3px 0">
     <span style="flex:1; min-width:0">${escapeHtml(pool ? pool.label : b.key)}</span>
+    ${badgeImgHtml(pool)}
     <input class="mb-price mini" type="number" min="0" value="${Number(b.price) || 0}" style="width:74px; text-align:right" />
     <button class="mb-del undo" title="убрать">✕</button>
   </div>`;
@@ -346,13 +352,37 @@ function renderMovieBadges(list) {
 function readMovieBadges() {
   return [...document.querySelectorAll('#movieBadgeList .mbadge-row')].map((r) => ({ key: r.dataset.key, price: parseInt(r.querySelector('.mb-price').value, 10) || 0 }));
 }
+// кастомный пикер с иконками вместо нативного select (option картинки не умеет)
 function populateMoviePicker(list) {
   const used = new Set((Array.isArray(list) ? list : []).map((b) => b.key));
-  $('movieBadgePick').innerHTML = '<option value="">+ добавить значок…</option>' +
-    MOVIE_BADGE_POOL.filter((p) => !used.has(p.key)).map((p) => `<option value="${p.key}">${escapeHtml(p.label)}</option>`).join('');
+  const avail = MOVIE_BADGE_POOL.filter((p) => !used.has(p.key));
+  $('badgePickMenu').innerHTML = avail.length
+    ? avail.map((p) => `<button type="button" class="badge-opt" data-key="${p.key}"><span class="badge-opt-label">${escapeHtml(p.label)}</span>${badgeImgHtml(p)}</button>`).join('')
+    : '<div class="muted" style="font-size:11px; padding:6px">все значки добавлены</div>';
 }
-async function saveMovie() { await saveSettings({ movieRewardTitle: $('movieRewardTitle').value.trim() || 'Предложить фильм', movieBase: parseInt($('movieBase').value, 10) || 0, movieAsDonation: $('movieAsDonation').checked, movieBadges: readMovieBadges() }); flashSaved(); }
-function syncMovieBar() { $('movieSwitch').classList.toggle('on', $('movieActive').checked); }
+function rerenderBadges() { const list = readMovieBadges(); renderMovieBadges(list); populateMoviePicker(list); }
+// иконки значков Twitch (Helix): мгновенно из кэша + свежий фетч, потом перерисовка строк и меню
+async function loadBadgeImages() {
+  const { badgeImages } = await chrome.storage.local.get('badgeImages');
+  if (badgeImages && typeof badgeImages === 'object') { badgeImgMap = badgeImages; rerenderBadges(); }
+  const s = await loadSettings();
+  if (!s.twitchToken || !s.twitchUserId) return;
+  try {
+    const map = await getChatBadges({ clientId: s.twitchClientId || DEFAULT_TWITCH_CLIENT_ID, token: s.twitchToken, broadcasterId: s.twitchUserId });
+    if (map && Object.keys(map).length) { badgeImgMap = map; await saveSettings({ badgeImages: map }); rerenderBadges(); }
+  } catch { /* иконок не будет — не критично */ }
+}
+async function saveMovie() { await saveSettings({ movieRewardTitle: $('movieRewardTitle').value.trim() || 'Предложить фильм', movieBase: parseInt($('movieBase').value, 10) || 0, movieAsDonation: $('movieAsDonation').checked, movieUsePoints: $('movieUsePoints').checked, movieDropNegForeign: $('movieDropNegForeign').checked, movieBadges: readMovieBadges() }); flashSaved(); renderMoviePointsSrc(); }
+function syncMovieBar() { const on = $('movieActive').checked; $('movieSwitch').classList.toggle('on', on); const h = $('moviePointaucHint'); if (h) h.hidden = !on; } // напоминание про приём ставок в pointauc — только когда ставки включены
+// Статус источника PigPoints в модуле (под тумблером): вкл/выкл + подключена ли таблица.
+function renderMoviePointsSrc(s) {
+  const el = $('moviePointsSrc'); if (!el) return;
+  const use = s ? s.movieUsePoints !== false : $('movieUsePoints').checked;
+  const hasSheet = !!((s ? s.sheetUrl : $('sheetUrl').value) || '').trim();
+  if (!use) { el.textContent = 'PigPoints в ставке: выкл'; el.className = 'health'; }
+  else if (!hasSheet) { el.textContent = '⚠ PigPoints: таблица не подключена — только база и значки'; el.className = 'health err'; }
+  else { el.textContent = '✓ PigPoints: из таблицы (плюс всегда, минус — свой лот)'; el.className = 'health ok'; }
+}
 
 // тумблер фичи: вкл → создать/включить награду «Предложить фильм» (новый раунд); выкл → выключить
 async function onToggleMovieBids() {
@@ -370,7 +400,7 @@ async function onToggleMovieBids() {
       await chrome.runtime.sendMessage({ type: 'movie-new-round' }).catch(() => {}); // сброс раунда атомарно в фоне (очередь + зачёт + журнал + кэши)
       chrome.runtime.sendMessage({ type: 'movie-subscribe' }).catch(() => {}); // поднять чат-подписку на текущей сессии
       renderMovieJournal([]);
-      setStatus(`Награда «${title}» активна.`, 'ok');
+      setStatus(`Награда «${title}» активна. Не забудь включить приём ставок за баллы канала в pointauc (▶).`, 'ok');
     } else {
       let warn = '';
       if (s.movieRewardId) { try { await updateReward(ctx, s.movieRewardId, { is_enabled: false }); } catch (err) { warn = ` (⚠ могла остаться активной: ${err.message})`; } }
@@ -393,16 +423,14 @@ function renderTwitchStatus(s) {
   st.className = 'health' + (conn ? ' ok' : '');
 }
 async function onTwitchConnect() {
-  const entered = $('twitchClientId').value.trim();
-  const clientId = entered || DEFAULT_TWITCH_CLIENT_ID;          // своё приложение или встроенное
-  if (!clientId) return setStatus('Укажи Twitch Client ID (встроенное приложение ещё не задано).', 'error');
-  if (entered) await saveSettings({ twitchClientId: entered });
+  const clientId = DEFAULT_TWITCH_CLIENT_ID;                     // встроенное приложение (своего Client ID больше нет)
   setStatus('Открываю окно авторизации Twitch…');
   try {
     const r = await connectTwitch(clientId);
     await saveSettings({ twitchToken: r.token, twitchUserId: r.userId, twitchLogin: r.login });
     chrome.runtime.sendMessage({ type: 'twitch-reconnect' }).catch(() => {}); // запустить слушатель
     { const ns = await loadSettings(); renderTwitchStatus(ns); renderStatusStrip(ns); }
+    loadBadgeImages(); // подтянуть картинки значков канала
     setStatus(`Twitch подключён: ${r.login}.`, 'ok');
   } catch (e) { setStatus(`Twitch: ${e.message}`, 'error'); }
 }
@@ -421,7 +449,7 @@ function renderTwitchPending(list) {
   $('pendingCount').style.display = rows.length ? 'inline-block' : 'none';
   $('pendingBulk').style.display = rows.length ? '' : 'none';
   card.classList.toggle('has-items', rows.length > 0);
-  if (rows.length > prevPendingCount) card.open = true; // всплываем только при НОВОЙ заявке
+  if (rows.length > prevPendingCount) { card.open = true; const pr = $('pigpointsCard'); if (pr) pr.open = true; } // всплываем только при НОВОЙ заявке (раскрываем и свёрнутый модуль «PigPoints · таблица»)
   prevPendingCount = rows.length;
   const el = $('twitchPending');
   if (!rows.length) { el.innerHTML = '<div class="muted" style="font-size:11px">пока нет</div>'; return; }
@@ -466,13 +494,19 @@ function renderMovieJournal(log) {
     const head = e.ok
       ? `<b style="font-weight:500" class="pos">${e.amount}</b><span class="muted"> → pointauc</span>`
       : `<span class="neg">${e.refunded ? 'балл возвращён' : 'ошибка'}</span>`;
+    const own = e.ownership === 'foreign' ? '<span class="tag skip">поддув</span> '
+      : (e.ownership === 'new' || e.ownership === 'sole') ? '<span class="tag update">свой</span> '
+      : e.ownership === 'unknown' ? '<span class="tag skip">доска недоступна</span> ' : '';
     let detail;
     if (e.ok) {
       const parts = (e.badges || []).map((b) => { const p = MOVIE_BADGE_POOL.find((x) => x.key === b.key); return `<span class="pos">${escapeHtml(p ? p.label : b.key)} +${b.price}</span>`; });
-      detail = parts.length ? parts.concat('база').join(' · ') : 'без значков · только база';
+      parts.push(e.base != null ? `база +${e.base}` : 'база');
+      if (e.pointsApplied) parts.push(`<span class="${e.pointsApplied < 0 ? 'neg' : 'pos'}">PigPoints ${e.pointsApplied > 0 ? '+' : ''}${e.pointsApplied}</span>`);
+      detail = own + parts.join(' · ');
+      if (!e.pointsApplied && e.points) detail += ` · <span class="muted" style="text-decoration:line-through">PigPoints ${e.points > 0 ? '+' : ''}${e.points}</span>${e.pointsSkip ? ` <span class="muted">(${escapeHtml(e.pointsSkip)})</span>` : ''}`;
       if (e.note) detail += ` · ⚠ ${escapeHtml(e.note)}`;
     } else {
-      detail = escapeHtml(e.note || 'новых значков нет — все уже зачтены');
+      detail = own + escapeHtml(e.note || 'новых значков нет — все уже зачтены');
     }
     return `<div style="font-size:11px; padding:5px 0; border-top:1px solid var(--border)">`
       + `<div><span class="dot" style="background:${e.ok ? '#27ae60' : '#eb5757'}"></span> ${who}<b style="font-weight:500">«${escapeHtml(e.movie || '')}»</b> ${head}<span class="muted" style="float:right">${t}</span></div>`
@@ -528,42 +562,35 @@ async function init() {
   const s = await loadSettings();
   $('token').value = s.token; $('sheetUrl').value = s.sheetUrl; $('sheetName').value = s.sheetName;
   $('firstRow').value = s.firstRow; $('nickCol').value = s.nickCol; $('pointsCol').value = s.pointsCol;
-  $('newLotPrefix').value = s.newLotPrefix;
-  $('allowNegative').checked = s.allowNegative; $('skipZero').checked = s.skipZero; $('asDonation').checked = s.asDonation;
   $('webAppUrl').value = s.webAppUrl; $('webAppSecret').value = s.webAppSecret;
   $('buySameCol').checked = s.buySameCol; $('buyPointsCol').value = s.buyPointsCol; toggleBuyCol();
   renderRewardMap(s.rewardMap);
   $('rewardsActive').checked = s.twitchRewardsActive; syncRewardBar();
   $('movieRewardTitle').value = s.movieRewardTitle; $('movieAsDonation').checked = s.movieAsDonation;
-  $('movieBase').value = s.movieBase; $('movieActive').checked = s.movieBidsActive; syncMovieBar();
-  renderMovieBadges(s.movieBadges); populateMoviePicker(s.movieBadges);
+  $('movieBase').value = s.movieBase; $('movieUsePoints').checked = s.movieUsePoints !== false; $('movieDropNegForeign').checked = s.movieDropNegForeign !== false; $('movieActive').checked = s.movieBidsActive; syncMovieBar();
+  renderMovieBadges(s.movieBadges); populateMoviePicker(s.movieBadges); loadBadgeImages();
   $('autoApprove').checked = s.twitchAutoApprove;
-  $('twitchClientId').value = s.twitchClientId;
-  $('twitchRedirect').textContent = chrome.identity.getRedirectURL();
   renderTwitchStatus(s);
   renderStatusStrip(s);
   renderTwitchPending(s.twitchPending);
   renderTwitchLog(s.twitchLog);
   renderMovieJournal(s.movieJournal);
+  renderMoviePointsSrc(s);
   if (!s.token || !s.sheetUrl) $('settings').open = true;
-  showLastApplied();
-  refreshRollbackButton();
   if (s.webAppUrl) runHealthCheck();
 
   // авто-сохранение: любое изменение поля в настройках сразу пишется в storage (input — с задержкой, change — сразу)
-  $('settings').addEventListener('input', () => { clearTimeout(saveTimer); saveTimer = setTimeout(saveAll, 400); });
+  $('settings').addEventListener('input', () => { clearTimeout(saveTimer); saveTimer = setTimeout(saveAll, 400); renderMoviePointsSrc(); });
   $('settings').addEventListener('change', async (e) => {
-    await saveAll();                                                        // сперва сохранить, потом обновлять кнопку отката (она читает storage)
-    if (e.target.id === 'token' || e.target.id === 'sheetUrl') refreshRollbackButton();
+    await saveAll();
     refreshStrip();                                                          // токен/таблица/twitch — обновить чипы статуса
+    renderMoviePointsSrc();                                                  // таблица подключена/нет → статус PigPoints в модуле
   });
   $('webAppUrl').addEventListener('change', runHealthCheck);
   $('webAppHealth').addEventListener('click', runHealthCheck);
-  $('preview').addEventListener('click', onPreview);
-  $('apply').addEventListener('click', onApplyClick);
-  $('rollback').addEventListener('click', onRollback);
   $('copyScript').addEventListener('click', onCopyScript);
   $('howto').addEventListener('click', () => chrome.tabs.create({ url: chrome.runtime.getURL('help.html') }));
+  $('settingsBtn').addEventListener('click', () => { $('settings').open = true; $('settings').scrollIntoView({ behavior: 'smooth', block: 'start' }); });
   $('buySameCol').addEventListener('change', toggleBuyCol);
   $('addReward').addEventListener('click', () => $('rewardMap').querySelector('tbody').insertAdjacentHTML('beforeend', rewardRowHtml()));
   $('rewardMap').addEventListener('input', () => { clearTimeout(rmapTimer); rmapTimer = setTimeout(saveRewardMap, 400); });
@@ -581,7 +608,6 @@ async function init() {
     try { await deleteReward(ctx, rewardId); setStatus('Награда удалена с Twitch.', 'ok'); }
     catch (err) { if (err.status !== 404) setStatus(`Не удалось удалить награду с Twitch: ${err.message}`, 'error'); }
   });
-  $('twitchClientId').addEventListener('change', () => saveSettings({ twitchClientId: $('twitchClientId').value.trim() }));
   $('twitchConnect').addEventListener('click', onTwitchConnect);
   $('twitchDisconnect').addEventListener('click', onTwitchDisconnect);
   $('rewardsActive').addEventListener('change', onToggleRewards);
@@ -589,10 +615,13 @@ async function init() {
   $('movieBase').addEventListener('input', () => { clearTimeout(movieTimer); movieTimer = setTimeout(saveMovie, 400); });
   $('movieRewardTitle').addEventListener('input', () => { clearTimeout(movieTimer); movieTimer = setTimeout(saveMovie, 400); });
   $('movieAsDonation').addEventListener('change', saveMovie);
+  $('movieUsePoints').addEventListener('change', saveMovie);
+  $('movieDropNegForeign').addEventListener('change', saveMovie);
   $('movieBadgeList').addEventListener('input', () => { clearTimeout(movieTimer); movieTimer = setTimeout(saveMovie, 400); });
   $('movieBadgeList').addEventListener('click', async (e) => { if (!e.target.closest('.mb-del')) return; e.target.closest('.mbadge-row').remove(); const list = readMovieBadges(); renderMovieBadges(list); populateMoviePicker(list); await saveMovie(); });
-  $('movieBadgePick').addEventListener('change', async (e) => { const key = e.target.value; if (!key) return; const list = readMovieBadges(); list.push({ key, price: 0 }); renderMovieBadges(list); populateMoviePicker(list); await saveMovie(); e.target.value = ''; });
-  $('movieNewRound').addEventListener('click', async () => { await chrome.runtime.sendMessage({ type: 'movie-new-round' }).catch(() => {}); renderMovieJournal([]); setStatus('Новый раунд — зачёт значков сброшен.', 'ok'); });
+  $('badgePickBtn').addEventListener('click', () => { const m = $('badgePickMenu'); m.hidden = !m.hidden; });
+  $('badgePickMenu').addEventListener('click', async (e) => { const b = e.target.closest('.badge-opt'); if (!b) return; const list = readMovieBadges(); list.push({ key: b.dataset.key, price: 0 }); renderMovieBadges(list); populateMoviePicker(list); $('badgePickMenu').hidden = true; await saveMovie(); });
+  document.addEventListener('click', (e) => { if (!e.target.closest('#badgePicker')) { const m = $('badgePickMenu'); if (m) m.hidden = true; } }); // клик вне пикера — закрыть меню
   $('twitchPending').addEventListener('click', (e) => {
     const row = e.target.closest('.prow'); if (!row) return;
     const sug = e.target.closest('.psuggest');
@@ -602,6 +631,7 @@ async function init() {
   });
   $('confirmAll').addEventListener('click', () => chrome.runtime.sendMessage({ type: 'twitch-resolve-all', action: 'confirm' }).catch(() => {}));
   $('rejectAll').addEventListener('click', () => chrome.runtime.sendMessage({ type: 'twitch-resolve-all', action: 'reject' }).catch(() => {}));
+  $('clearLog').addEventListener('click', () => chrome.runtime.sendMessage({ type: 'twitch-log-clear' }).catch(() => {}));
   $('autoApprove').addEventListener('change', async () => { await saveSettings({ twitchAutoApprove: $('autoApprove').checked }); renderTwitchPending((await loadSettings()).twitchPending); });
   $('autoCtl').addEventListener('click', (e) => e.stopPropagation()); // клик по тумблеру в шапке не сворачивает карточку
   $('statusStrip').addEventListener('click', (e) => {                        // клик по чипу → открыть нужную секцию настроек
@@ -610,8 +640,6 @@ async function init() {
     const el = document.getElementById(c.dataset.target);
     if (el) { const card = el.closest('details'); if (card && card !== $('settings')) card.open = true; el.scrollIntoView({ block: 'center' }); el.focus?.(); }
   });
-  // инлайн ↩ (делегирование)
-  $('result').addEventListener('click', (e) => { const b = e.target.closest('.undo'); if (b) undoNick(b.dataset.nick); });
 }
 
 init();

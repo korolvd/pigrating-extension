@@ -10,7 +10,6 @@ export const DEFAULTS = {
   firstRow: 2,            // номер первой строки с данными (1-based, как в таблице)
   nickCol: 'A',           // столбец с ником
   pointsCol: 'B',         // столбец с баллами
-  newLotPrefix: '[СОЦРЕЙТИНГ] ', // приставка к имени лота при выборе «новый лот» в окне
   allowNegative: true,
   skipZero: true,
   asDonation: false,      // слать ставки как донат (isDonation: true) — применится конвертация аука
@@ -27,6 +26,8 @@ export const DEFAULTS = {
   movieBase: 1,               // база, прибавляемая к сумме цен значков
   movieRewardTitle: 'Предложить фильм', // название награды (редактируется стримером)
   movieAsDonation: false,     // слать ставку как донат (pointauc применит конвертацию деньги→баллы)
+  movieUsePoints: true,       // прибавлять PigPoints зрителя из таблицы к ставке за значки (плюс всегда; минус — по галке ниже)
+  movieDropNegForeign: true,  // не учитывать отрицательные PigPoints в общих (чужих) лотах; выкл → минус учитывается везде
   movieRewardId: '',          // id созданной награды на Twitch
   movieBadges: [],            // выбранные значки с ценами: [{ key, price }]
   moviePending: [],           // незавершённые активации (ждут пары/обработки) — переживают сон SW
@@ -39,6 +40,9 @@ export const DEFAULTS = {
   twitchLog: [],          // лог последних начислений за балы канала (пишет background)
   twitchPending: [],      // редемпшены на ручное подтверждение стримером (пишет background)
 };
+
+// Приставка инвестора-метки для рейтинга/залива (захардкожено). Метка на лоте: "[PP] ник:сумма".
+export const LOT_PREFIX = '[PP] ';
 
 // ───────────────────────── Google Sheets ─────────────────────────
 export function parseSheetRef(url) {
@@ -226,6 +230,7 @@ export const MOVIE_BADGE_POOL = [
   { key: 'vip', label: 'VIP', src: 'helix' },
   { key: 'mod', label: 'Модератор', src: 'helix' },
   { key: 'follower', label: 'Фолловер', src: 'helix' },
+  { key: 'artist', label: 'Артист', src: 'chat', setId: 'artist-badge' }, // выдаётся стримером; чат-значок, детект по наличию (как founder)
   { key: 'giftlead1', label: 'Топ-1 даритель', src: 'chat', setId: 'sub-gift-leader', version: '1' },
   { key: 'giftlead2', label: 'Топ-2 даритель', src: 'chat', setId: 'sub-gift-leader', version: '2' },
   { key: 'giftlead3', label: 'Топ-3 даритель', src: 'chat', setId: 'sub-gift-leader', version: '3' },
@@ -243,7 +248,25 @@ export const MOVIE_BADGE_POOL = [
   { key: 'bitslead1', label: 'Топ-1 по битам', src: 'chat', setId: 'bits-leader', version: '1' },
   { key: 'bitslead2', label: 'Топ-2 по битам', src: 'chat', setId: 'bits-leader', version: '2' },
   { key: 'bitslead3', label: 'Топ-3 по битам', src: 'chat', setId: 'bits-leader', version: '3' },
+  { key: 'hypetrain', label: 'Кондуктор хайп-трейна', src: 'chat', setId: 'hype-train' }, // текущий/бывший лидер хайп-трейна; чат-значок, детект по наличию (версии 1=текущий, 2=бывший)
 ];
+
+// URL картинки значка из карты getChatBadges (set_id→version_id→url). entry — элемент MOVIE_BADGE_POOL.
+// null, если значка нет (напр. «фолловер» — у Twitch нет такого значка). Саб — базовая иконка (тир в значке не кодируется).
+export function movieBadgeImage(entry, map) {
+  if (!entry || !map) return null;
+  if (entry.src === 'helix') {
+    const setId = entry.key === 'vip' ? 'vip' : entry.key === 'mod' ? 'moderator' : entry.sub ? 'subscriber' : null;
+    const vers = setId && map[setId];
+    if (!vers) return null; // follower — значка нет
+    return vers['1'] || vers['0'] || Object.values(vers)[0] || null;
+  }
+  const vers = map[entry.setId];
+  if (!vers) return null;
+  if (entry.version != null) return vers[String(entry.version)] || null;                               // giftlead/cliplead/bitslead/hypetrain
+  if (entry.minVersion != null) return vers[String(entry.minVersion)] || Object.values(vers)[0] || null; // gifter/bits — по порогу
+  return vers['0'] || vers['1'] || Object.values(vers)[0] || null;                                     // по наличию (founder/artist)
+}
 
 // Какие из ВЫБРАННЫХ значков есть у зрителя сейчас. selected: [{key,price}];
 // chatBadges: [{set_id,id}] из сообщения; status: { subTier:0|1|2|3, vip, mod, follower } из Helix.
@@ -290,7 +313,7 @@ export function buildAppsScript(s, secret) {
   if (nickCol < 1 || ptsCol < 1) throw new Error('Неверно указан столбец ника/баллов (нужно A, B, … или номер).');
   return [
     '/**',
-    ' * PigRating — приём начислений рейтинга (сгенерировано расширением).',
+    ' * PigPoints — приём начислений за балы канала (сгенерировано расширением).',
     ' * Deploy → New deployment → Web app: Execute as Me, Who has access Anyone → скопируй URL в расширение.',
     ' */',
     `const SECRET     = ${JSON.stringify(secret)};`,
@@ -349,8 +372,42 @@ export function parseMark(investor, prefix) {
   return { nick: rest.slice(0, i).trim(), amount: Number.isFinite(amount) ? amount : NaN };
 }
 
+// ───────────────────────── ставка за значки + рейтинг: детект «свой/чужой» ─────────────────────────
+// Фаззи-матч названия фильма по доске (та же метрика, что «похожий лот» в pointauc) + «единственный
+// реальный вкладчик» (как buildPlan, метки [PP] не считаем). login — twitch-логин зрителя.
+// → { isNew, isSole, matchedName, score }.
+export function findMovieLot(lots, title, login, prefix = LOT_PREFIX, threshold = 0.4) {
+  let best = null, score = 0;
+  for (const l of (Array.isArray(lots) ? lots : [])) {
+    const sc = diceSimilarity(title, l.name);
+    if (sc > threshold && sc > score) { best = l; score = sc; }
+  }
+  if (!best) return { isNew: true, isSole: false, matchedName: null, score: 0 };
+  const real = new Set((best.investors || []).filter((inv) => !isMark(inv, prefix)).map(norm));
+  const isSole = real.size === 1 && real.has(norm(login));
+  return { isNew: false, isSole, matchedName: best.name, score };
+}
+
+// Решение по вкладу PigPoints в ставку за значки. lot: null | { isNew, isSole } | { error: true }.
+// Правило: плюс — всегда. Минус — если dropNegForeign=false, то везде; иначе только когда лот новый ИЛИ
+// зритель единственный реальный вкладчик (в общий лот не идёт). Дедуп: учитывается раз в раунд (alreadyApplied → 0).
+// → { value, ownership: ''|'plus'|'minus'|'new'|'sole'|'foreign'|'unknown', reason }.
+export function moviePointsDecision({ points, usePoints, alreadyApplied, lot, dropNegForeign = true }) {
+  if (!usePoints) return { value: 0, ownership: '', reason: 'PigPoints выкл' };
+  if (alreadyApplied) return { value: 0, ownership: '', reason: 'PigPoints уже учтены в раунде' };
+  if (!Number.isFinite(points) || points === 0) return { value: 0, ownership: '', reason: '' };
+  if (points > 0) return { value: points, ownership: 'plus', reason: '' };
+  if (!dropNegForeign) return { value: points, ownership: 'minus', reason: '' }; // галка выкл → минус везде
+  if (!lot || lot.error) return { value: 0, ownership: 'unknown', reason: 'минус не применён: доска недоступна' };
+  if (lot.isNew) return { value: points, ownership: 'new', reason: '' };
+  if (lot.isSole) return { value: points, ownership: 'sole', reason: '' };
+  return { value: 0, ownership: 'foreign', reason: 'минус не учтён: поддув в общий лот' };
+}
+
+// ⚠️ DEPRECATED (на удаление): ручной залив PigPoints из таблицы в лоты — buildPlan/resolveChoice/executePlan/
+// buildRollbackPlan/planRollbackPuts/executeRollback/updateLot. UI убран; авто-формула фильм-ставки это заменяет.
 export function buildPlan(rows, lots, s) {
-  const prefix = s.newLotPrefix || '';
+  const prefix = LOT_PREFIX;
   const effInvestors = (l) => (l.investors || []).filter((inv) => !isMark(inv, prefix)); // реальные вкладчики
 
   return rows.map((r) => {
@@ -361,7 +418,7 @@ export function buildPlan(rows, lots, s) {
     if (r.points === 0 && s.skipZero) return Object.assign(it, { action: 'skip', reason: 'ноль' });
     if (r.points < 0 && !s.allowNegative) return Object.assign(it, { action: 'skip', reason: 'минус выключен' });
 
-    // совпадение по реальному вкладчику (метки [СОЦРЕЙТИНГ] не учитываем)
+    // совпадение по реальному вкладчику (метки [PP] не учитываем)
     const matched = lots.filter((l) => effInvestors(l).some((inv) => norm(inv) === norm(r.nick)));
     const candidates = matched.map((l) => ({ id: l.id, fastId: l.fastId, name: l.name, amount: l.amount }));
 
@@ -389,7 +446,7 @@ export function buildPlan(rows, lots, s) {
 
 // Применяет выбор пользователя к пункту resolve. choice: 'skip' | 'new' | <lotId>.
 // lotsById — карта id→лот (с fastId) для лотов вне кандидатов (когда выбирается любой лот).
-export function resolveChoice(it, choice, prefix = '', lotsById = {}) {
+export function resolveChoice(it, choice, prefix = LOT_PREFIX, lotsById = {}) {
   if (it.action !== 'resolve') return it;
   if (choice === 'new') return { ...it, action: 'create', target: prefix + it.nick };
   if (choice && choice !== 'skip') {
@@ -426,7 +483,7 @@ export async function updateLot(token, id, lot) {
 }
 
 // Сканирует доску: каждая метка [префикс]ник:сумма → строка отката.
-export function buildRollbackPlan(lots, prefix) {
+export function buildRollbackPlan(lots, prefix = LOT_PREFIX) {
   const items = [];
   for (const l of lots) for (const inv of (l.investors || [])) {
     const m = parseMark(inv, prefix);

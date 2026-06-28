@@ -2,7 +2,7 @@
 <html lang="ru">
 <head>
   <meta charset="utf-8" />
-  <title>PigRating</title>
+  <title>PigPoints</title>
   <link rel="stylesheet" href="popup.css" />
 </head>
 <body>
@@ -23,76 +23,97 @@
     <symbol id="ic-help" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 17v.01"/><path d="M12 13.5a1.5 1.5 0 0 1 1 -1.5a2.6 2.6 0 1 0 -3 -4"/></symbol>
     <symbol id="ic-bolt" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 3v7h6l-8 11v-7h-6l8 -11"/></symbol>
     <symbol id="ic-movie" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4m0 2a2 2 0 0 1 2 -2h12a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-12a2 2 0 0 1 -2 -2z"/><path d="M8 4l0 16"/><path d="M16 4l0 16"/><path d="M4 8l4 0"/><path d="M4 16l4 0"/><path d="M4 12l16 0"/><path d="M16 8l4 0"/><path d="M16 16l4 0"/></symbol>
+    <symbol id="ic-award" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="9" r="6"/><path d="M12 15l3.4 5.89l1.598 -3.233l3.598 .232l-3.4 -5.889"/><path d="M6.802 12l-3.4 5.89l3.598 -.233l1.598 3.232l3.4 -5.889"/></symbol>
+    <symbol id="ic-refresh" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8.1 8.1 0 0 0 -15.5 -2m-.5 -4v4h4"/><path d="M4 13a8.1 8.1 0 0 0 15.5 2m.5 4v-4h-4"/></symbol>
+    <symbol id="ic-plug" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.785 6l8.215 8.215l-2.054 2.054a5.81 5.81 0 1 1 -8.215 -8.215l2.054 -2.054z"/><path d="M4 20l3.5 -3.5"/><path d="M15 4l-3.5 3.5"/><path d="M19 8l-3.5 3.5"/></symbol>
   </svg>
 
-  <header>
-    <h1>🐷 PigRating — соцрейтинг свиноколеса</h1>
+  <header class="app-head">
+    <span class="brand">
+      <span class="pig">🐷</span>
+      <span class="brand-text">
+        <span class="brand-name">PigPoints</span>
+        <span class="brand-tag">значки, балы канала и таблица → ставки в pointauc</span>
+      </span>
+    </span>
+    <button id="settingsBtn" class="iconbtn" title="Настройки"><svg class="ic"><use href="#ic-settings"/></svg></button>
   </header>
 
   <div class="strip-row">
     <div id="statusStrip" class="strip"></div>
-    <span class="reward-switch" id="rewardSwitch" title="Награды за балы канала — вкл/выкл. Вкл создаёт/включает награды на Twitch (зрители могут покупать). Поменял награды → выключи и включи.">
-      <svg class="ic"><use href="#ic-gift"/></svg>
-      <label class="switch"><input id="rewardsActive" type="checkbox" /><span class="track"></span></label>
-    </span>
-    <span class="reward-switch" id="movieSwitch" title="Ставки за значки — вкл создаёт награду «Предложить фильм» (1 балл + ввод). Ставка = база + сумма цен значков зрителя → в очередь pointauc. Настройки — в разделе «Ставки за значки».">
-      <svg class="ic"><use href="#ic-movie"/></svg>
-      <label class="switch"><input id="movieActive" type="checkbox" /><span class="track"></span></label>
-    </span>
-  </div>
-
-  <div class="actions">
-    <button id="preview" class="primary"><svg class="ic"><use href="#ic-search"/></svg> Предпросмотр</button>
-    <button id="apply" class="primary" disabled><svg class="ic"><use href="#ic-apply"/></svg> <span class="btn-label">Применить</span></button>
-    <button id="rollback" class="danger" disabled><svg class="ic"><use href="#ic-rollback"/></svg> <span class="btn-label">Откатить</span></button>
+    <span class="tagline-mini">свинобалы для свиноколеса 🐷</span>
   </div>
 
   <div id="status" class="status"></div>
-  <div id="result" class="result"></div>
 
-  <details id="pendingCard" class="card" open>
-    <summary><svg class="ic"><use href="#ic-hourglass"/></svg> На подтверждение (Twitch) <span id="pendingCount" class="badge"></span>
+  <div class="sources-label">Источники ставок</div>
+
+  <!-- Модуль 1: Значки → ставка на фильм (флагман) -->
+  <div class="card module module-flag">
+    <div class="mod-head">
+      <svg class="ic mod-ic" style="color:#a970ff"><use href="#ic-award"/></svg>
+      <span class="mod-name">Значки + PigPoints → ставка за фильм</span>
+      <span class="mod-badge">основное</span>
+      <label class="switch" id="movieSwitch" title="Ставки за фильм — вкл создаёт награду «Предложить фильм» (1 балл + ввод). Ставка = база + цены значков зрителя + его PigPoints из таблицы. Настройки — под шестерёнкой."><input id="movieActive" type="checkbox" /><span class="track"></span></label>
+    </div>
+    <div class="mod-desc">Зритель предлагает фильм; ставка = база + цены его значков Twitch + его PigPoints из таблицы → в очередь подтверждения pointauc.</div>
+    <div id="moviePointsSrc" class="health"></div>
+    <div id="moviePointaucHint" class="mod-hint" hidden>⚠ В pointauc включи приём ставок за баллы канала (кнопка ▶ / «Отслеживать ставки за баллы канала») — иначе ставки не дойдут.</div>
+    <details class="subcard">
+      <summary><svg class="ic"><use href="#ic-receipt"/></svg> Журнал ставок за значки</summary>
+      <div id="movieJournal"></div>
+    </details>
+  </div>
+
+  <!-- Модуль 2: PigPoints · таблица — покупка PigPoints за балы канала (копится в таблице) -->
+  <details id="pigpointsCard" class="card module">
+    <summary class="mod-head">
+      <span class="pig sm">🐷</span>
+      <span class="mod-name">PigPoints · таблица <span class="muted" style="font-weight:400; font-size:11px">· покупка за балы канала</span></span>
+    </summary>
+
+    <div class="mod-sub">
+      <svg class="ic" style="color:#f2c94c"><use href="#ic-gift"/></svg>
+      <span class="mod-sub-name">Покупка PigPoints <span class="muted" style="font-size:11px">— за балы канала, копится в таблице</span></span>
       <span class="sum-ctl" id="autoCtl" title="Авто-начисление: найденные ники начисляются сразу; ненайденные на Twitch — на ручное подтверждение.">
         <svg class="ic" style="color:#f2c94c"><use href="#ic-bolt"/></svg>
         <label class="switch"><input id="autoApprove" type="checkbox" /><span class="track"></span></label>
       </span>
-    </summary>
-    <div id="pendingBulk" class="row" style="gap:8px; margin:4px 0">
-      <button id="confirmAll" class="ghost ok"><svg class="ic"><use href="#ic-check"/></svg> подтвердить все</button>
-      <button id="rejectAll" class="ghost danger-text"><svg class="ic"><use href="#ic-x"/></svg> отклонить все</button>
+      <span id="pendingCount" class="badge"></span>
+      <label class="switch" id="rewardSwitch" title="Награды за балы канала — вкл/выкл. Поменял награды → выключи и включи."><input id="rewardsActive" type="checkbox" /><span class="track"></span></label>
     </div>
-    <div id="twitchPending"></div>
-  </details>
+    <details id="pendingCard" class="subcard" open>
+      <summary><svg class="ic"><use href="#ic-hourglass"/></svg> На подтверждение (Twitch)</summary>
+      <div id="pendingBulk" class="row" style="gap:8px; margin:4px 0">
+        <button id="confirmAll" class="ghost ok"><svg class="ic"><use href="#ic-check"/></svg> подтвердить все</button>
+        <button id="rejectAll" class="ghost danger-text"><svg class="ic"><use href="#ic-x"/></svg> отклонить все</button>
+      </div>
+      <div id="twitchPending"></div>
+    </details>
 
-  <details class="card">
-    <summary><svg class="ic"><use href="#ic-receipt"/></svg> Последние начисления (Twitch)</summary>
-    <div id="twitchLog"></div>
-  </details>
-
-  <details class="card">
-    <summary><svg class="ic"><use href="#ic-movie"/></svg> Журнал ставок за значки</summary>
-    <div id="movieJournal"></div>
+    <details class="subcard">
+      <summary><svg class="ic"><use href="#ic-receipt"/></svg> Последние начисления (Twitch)</summary>
+      <div class="row" style="margin:4px 0"><button id="clearLog" class="ghost danger-text"><svg class="ic"><use href="#ic-x"/></svg> очистить журнал</button></div>
+      <div id="twitchLog"></div>
+    </details>
   </details>
 
   <details id="settings" class="card">
-    <summary><svg class="ic"><use href="#ic-settings"/></svg> Настройки <span class="muted" style="font-weight:400; font-size:11px">pointauc · таблица · Twitch · награды</span></summary>
+    <summary><svg class="ic"><use href="#ic-settings"/></svg> Настройки <span class="muted" style="font-weight:400; font-size:11px">подключения · значки и награды</span></summary>
     <details class="card">
-      <summary><svg class="ic"><use href="#ic-target"/></svg> pointauc</summary>
-      <label>Personal Token
+      <summary><svg class="ic"><use href="#ic-plug"/></svg> Подключения</summary>
+      <div class="subhead">pointauc</div>
+      <label>Personal Token <span class="muted" style="font-size:10px">(pointauc → Настройки)</span>
         <input id="token" type="password" placeholder="pointauc.com → Настройки → Personal Token" autocomplete="off" />
       </label>
-      <label>Префикс подписи инвестора
-        <input id="newLotPrefix" type="text" placeholder="[СОЦРЕЙТИНГ] " />
-      </label>
-      <div class="row">
-        <label class="inline"><input id="allowNegative" type="checkbox" /> разрешать минус</label>
-        <label class="inline"><input id="skipZero" type="checkbox" /> пропускать нули</label>
-        <label class="inline"><input id="asDonation" type="checkbox" /> как донат</label>
+      <div class="subhead">Twitch</div>
+      <div class="muted" style="font-size:11px; margin:2px 0">Приложение встроено — просто подключи свой канал.</div>
+      <div class="row" style="gap:8px; align-items:center; margin-top:4px">
+        <button id="twitchConnect" class="ghost">Подключить Twitch</button>
+        <button id="twitchDisconnect" class="ghost" hidden>Отключить</button>
+        <span id="twitchStatus" class="health"></span>
       </div>
-    </details>
-
-    <details class="card">
-      <summary><svg class="ic"><use href="#ic-table"/></svg> Google-таблица</summary>
+      <div class="subhead">Google-таблица (чтение)</div>
       <label>Ссылка на таблицу
         <input id="sheetUrl" type="password" placeholder="https://docs.google.com/spreadsheets/d/.../edit#gid=0" autocomplete="off" />
       </label>
@@ -104,10 +125,10 @@
         <label class="inline">столбец ника <input id="nickCol" class="mini" type="text" placeholder="A" /></label>
         <label class="inline">столбец баллов <input id="pointsCol" class="mini" type="text" placeholder="B" /></label>
       </div>
-
-      <div class="muted" style="font-size:11px; margin:10px 0 2px">Запись в таблицу (покупка рейтинга за балы канала) — через Apps Script:</div>
+      <div class="subhead">Запись покупок (Apps Script)</div>
+      <div class="muted" style="font-size:11px; margin:2px 0">Покупка PigPoints за балы канала пишется в таблицу через Apps Script:</div>
       <div class="row" style="gap:8px">
-        <button id="copyScript" class="ghost"><svg class="ic"><use href="#ic-copy"/></svg> Скопировать скрипт (Apps Script)</button>
+        <button id="copyScript" class="ghost"><svg class="ic"><use href="#ic-copy"/></svg> Скопировать скрипт</button>
         <button id="howto" class="ghost"><svg class="ic"><use href="#ic-help"/></svg> Как установить?</button>
       </div>
       <label>URL веб-аппа
@@ -119,44 +140,15 @@
       </label>
       <div class="row">
         <label class="inline"><input id="buySameCol" type="checkbox" /> балы покупок — в тот же столбец</label>
-        <label class="inline" id="buyColWrap">столбец покупок <input id="buyPointsCol" class="mini" type="text" placeholder="F" /> <span class="muted" style="font-size:10px">(в залив не идёт — сливай вручную)</span></label>
+        <label class="inline" id="buyColWrap">столбец покупок <input id="buyPointsCol" class="mini" type="text" placeholder="F" /> <span class="muted" style="font-size:10px">(в ставку за фильм не идёт — она читает основной столбец)</span></label>
       </div>
     </details>
 
     <details class="card">
-      <summary><svg class="ic"><use href="#ic-twitch"/></svg> Twitch</summary>
-      <label>Twitch Client ID <span class="muted" style="font-size:10px">(необязательно — встроено)</span>
-        <input id="twitchClientId" type="text" placeholder="оставь пустым — используется встроенное приложение" autocomplete="off" />
-      </label>
-      <div class="muted" style="font-size:11px; margin:2px 0">
-        Redirect URL для приложения (впиши в OAuth Redirect URLs): <code id="twitchRedirect">—</code>
-      </div>
-      <div class="row" style="gap:8px; align-items:center; margin-top:4px">
-        <button id="twitchConnect" class="ghost">Подключить Twitch</button>
-        <button id="twitchDisconnect" class="ghost" hidden>Отключить</button>
-        <span id="twitchStatus" class="health"></span>
-      </div>
-    </details>
-
-    <details class="card">
-      <summary><svg class="ic"><use href="#ic-gift"/></svg> Награды Twitch → рейтинг</summary>
+      <summary><svg class="ic"><use href="#ic-award"/></svg> Значки и награды</summary>
+      <div class="subhead">Награда за фильм</div>
       <div class="muted" style="font-size:11px; margin:4px 0">
-        Расширение создаст эти награды на твоём канале (после подключения Twitch). <b>цена</b> — в балах канала; <b>рейтинг</b> — сколько добавить (можно минус). «кому»: <b>себе</b> — зрителю, <b>ник из ввода</b> — нику из поля награды (подарок/диверсия); если поле не заполнено — начисляется самому зрителю.
-      </div>
-      <table id="rewardMap">
-        <thead><tr><th>награда</th><th>цена</th><th>рейтинг</th><th>кому</th><th></th></tr></thead>
-        <tbody></tbody>
-      </table>
-      <div class="row" style="gap:8px; margin-top:6px">
-        <button id="addReward" class="ghost">+ добавить награду</button>
-      </div>
-      <div class="muted" style="font-size:10px; margin-top:4px">Включаются/выключаются тумблером «Награды за балы канала» наверху. Поменял награды? Выключи и включи, чтобы применить.</div>
-    </details>
-
-    <details class="card">
-      <summary><svg class="ic"><use href="#ic-movie"/></svg> Ставки за значки</summary>
-      <div class="muted" style="font-size:11px; margin:4px 0">
-        Награда «Предложить фильм» (1 балл, ввод названия) создаётся тумблером наверху. Ставка = база + сумма цен значков зрителя → в очередь подтверждения pointauc. Считаются только <b>новые</b> значки; повтор без новых → возврат балла; сброс при включении тумблера.
+        Награда «Предложить фильм» (1 балл, ввод названия) создаётся тумблером модуля наверху. Ставка = база + цены значков + PigPoints зрителя → в очередь подтверждения pointauc. Считаются только <b>новые</b> значки; повтор без новых → возврат балла; учёт раунда сбрасывается при выключении/включении тумблера.
       </div>
       <label style="display:block; margin:6px 0 2px">Название награды</label>
       <input id="movieRewardTitle" type="text" placeholder="Предложить фильм" value="Предложить фильм" />
@@ -170,12 +162,32 @@
       <div class="muted" style="font-size:11px; margin:8px 0 4px">Учитываемые значки (добавь из пула, задай цену):</div>
       <div id="movieBadgeList"></div>
       <div class="row" style="gap:8px; margin-top:6px">
-        <select id="movieBadgePick"><option value="">+ добавить значок…</option></select>
+        <div id="badgePicker" class="badge-picker">
+          <button type="button" id="badgePickBtn" class="ghost">+ добавить значок… ▾</button>
+          <div id="badgePickMenu" class="badge-menu" hidden></div>
+        </div>
       </div>
-      <div class="row" style="gap:8px; margin-top:8px">
-        <button id="movieNewRound" class="ghost">↻ Новый раунд (сбросить зачёт значков)</button>
+      <label class="inline" style="margin-top:8px"><input id="movieUsePoints" type="checkbox" /> прибавлять PigPoints зрителя из таблицы</label>
+      <label class="inline"><input id="movieDropNegForeign" type="checkbox" /> не учитывать отрицательные PigPoints в общих лотах</label>
+      <div class="infocard">
+        <b>Как считаются PigPoints в ставке:</b><br>
+        • <b>плюс</b> — прибавляется всегда (поддув в чужой фильм = хороший позыв);<br>
+        • <b>минус</b> — при включённой галке выше идёт только в <b>свой новый</b> лот или где зритель <b>единственный вкладчик</b>; в общий лот (поддув) минус не идёт. Выключишь галку — минус учитывается везде.<br>
+        <span class="muted">Источник — Google-таблица из раздела «Подключения». Нет в таблице / таблица недоступна → PigPoints не учитываются.</span>
       </div>
-      <div class="muted" style="font-size:10px; margin-top:4px">Тумблер «Ставки за значки» — наверху. Включение начинает новый раунд; «Новый раунд» сбрасывает зачёт, не выключая награду.</div>
+
+      <div class="subhead">Награды за PigPoints</div>
+      <div class="muted" style="font-size:11px; margin:2px 0">
+        Расширение создаст эти награды на канале (после подключения Twitch). <b>цена</b> — в балах канала; <b>PigPoints</b> — сколько добавить (можно минус). «кому»: <b>себе</b> — зрителю, <b>ник из ввода</b> — нику из поля награды; пусто → самому зрителю.
+      </div>
+      <table id="rewardMap">
+        <thead><tr><th>награда</th><th>цена</th><th>PigPoints</th><th>кому</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <div class="row" style="gap:8px; margin-top:6px">
+        <button id="addReward" class="ghost">+ добавить награду</button>
+      </div>
+      <div class="muted" style="font-size:10px; margin-top:4px">Вкл/выкл тумблером «Покупка PigPoints» в модуле «PigPoints · таблица». Поменял награды? Выключи и включи.</div>
     </details>
 
     <div class="muted" style="font-size:11px; margin-top:6px">Настройки сохраняются автоматически. <span id="savedHint" class="saved-hint">✓ сохранено</span></div>

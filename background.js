@@ -1,7 +1,7 @@
 // Фоновый service worker: выполняет заливку и откат независимо от popup.
 // Окно расширения можно закрыть — операция дойдёт до конца.
 
-import { executePlan, executeRollback, resolveRedemption, addPoints, normNick, fetchSheetRows, suggestNick, applicableMovieBadges, postBids } from './core.js';
+import { executePlan, executeRollback, resolveRedemption, addPoints, normNick, fetchSheetRows, suggestNick, applicableMovieBadges, postBids, getLots, findMovieLot, moviePointsDecision } from './core.js';
 import { subscribeRedemptions, updateRedemptionStatus, redemptionEvent, userExists, subscribeChatMessages, chatMessageEvent, getSubTier, isVip, isMod, isFollower, DEFAULT_TWITCH_CLIENT_ID } from './twitch.js';
 
 let running = false;
@@ -12,6 +12,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg?.type === 'twitch-reconnect') { paused = false; ensureListener(); sendResponse?.({ ok: true }); return; }
   if (msg?.type === 'twitch-resolve') { resolvePending(msg.redemptionId, msg.action, msg.overrideNick).then(() => sendResponse({ ok: true })).catch((e) => sendResponse({ error: e.message })); return true; }
   if (msg?.type === 'twitch-resolve-all') { resolveAllPending(msg.action).then(() => sendResponse({ ok: true })).catch((e) => sendResponse({ error: e.message })); return true; }
+  if (msg?.type === 'twitch-log-clear') { lockLog(async () => { await chrome.storage.local.set({ twitchLog: [] }); broadcast({ type: 'twitch-log' }); }).then(() => sendResponse({ ok: true })).catch((e) => sendResponse({ error: e.message })); return true; } // очистка журнала начислений под тем же мьютексом, что и запись
   if (msg?.type === 'movie-subscribe') { subscribeMovieChat().then(() => sendResponse({ ok: true })).catch((e) => sendResponse({ error: e.message })); return true; } // тумблер фичи включили в середине сессии → поднять чат-подписку
   if (msg?.type === 'movie-new-round') { newMovieRound().then(() => sendResponse({ ok: true })).catch((e) => sendResponse({ error: e.message })); return true; } // сброс раунда атомарно в SW
 });
@@ -24,6 +25,8 @@ async function token() {
   return token;
 }
 
+// ⚠️ DEPRECATED (на удаление): ручной залив/откат PigPoints в лоты. UI убран, сообщения 'apply'/'rollback'
+// больше не приходят из popup. Авто-формула фильм-ставки это заменяет. runApply/runRollback оставлены до выпила.
 async function runApply(plan) {
   if (running) return { error: 'Операция уже идёт.' };
   if (!Array.isArray(plan) || !plan.length) return { error: 'Пустой план.' };
@@ -174,16 +177,37 @@ async function setRedemption(ctx, rewardId, redemptionId, status) {
   catch (e) { return e.message; }
 }
 
-// Кэш ростера (ники из таблицы) для подсказок похожих ников. SW может выгрузиться → перечитаем по TTL.
-let rosterCache = { at: 0, nicks: [] };
-async function getRoster(s) {
+// Кэш ростера (строки таблицы {nick, points}) для подсказок похожих ников И рейтинга в ставке за значки.
+// SW может выгрузиться → перечитаем по TTL. Один кэш на оба применения.
+let rosterCache = { at: 0, rows: [] };
+async function loadRosterRows(s) {
   if (!s.sheetUrl) return []; // ростер читается из таблицы по ссылке
-  if (Date.now() - rosterCache.at < 60000 && rosterCache.nicks.length) return rosterCache.nicks;
+  if (Date.now() - rosterCache.at < 60000 && rosterCache.rows.length) return rosterCache.rows;
   try {
     const rows = await fetchSheetRows(s.sheetUrl, s);
-    rosterCache = { at: Date.now(), nicks: rows.map((r) => r.nick).filter(Boolean) };
+    rosterCache = { at: Date.now(), rows: rows.filter((r) => r.nick) };
   } catch { /* таблица недоступна — оставляем прошлый кэш (или пусто) */ }
-  return rosterCache.nicks;
+  return rosterCache.rows;
+}
+async function getRoster(s) { return (await loadRosterRows(s)).map((r) => r.nick); } // сырые ники для suggestNick
+
+// PigPoints зрителя из таблицы (для ставки за значки). Матч строго по twitch-логину; нет в таблице/недоступна → 0.
+async function getPoints(s, login) {
+  const rows = await loadRosterRows(s);
+  const ln = normNick(login);
+  const row = rows.find((r) => normNick(r.nick) === ln);
+  return row && Number.isFinite(row.points) ? row.points : 0;
+}
+
+// Лоты pointauc для детекта «свой/чужой» (только когда рейтинг < 0). Кэш в пределах раунда, короткий TTL.
+let lotsCache = { gen: -1, at: 0, lots: null };
+async function getMovieLots(tok) {
+  const now = Date.now();
+  if (lotsCache.gen === movieGen && now - lotsCache.at < 5000 && lotsCache.lots) return lotsCache.lots;
+  const g = movieGen; // зафиксировать раунд ДО сетевого ожидания
+  const lots = await getLots(tok);
+  if (g === movieGen) lotsCache = { gen: g, at: now, lots }; // раунд сменился во время фетча → не кэшируем чужую доску под новым поколением
+  return lots;
 }
 
 // Начислить баллы + подтвердить (FULFILLED); при ошибке записи — вернуть баллы (CANCELED). Ошибки Twitch видны в логе.
@@ -431,23 +455,38 @@ async function processMovieItem(item) { // { redemptionId, userId, userLogin, mo
   const participated = Array.isArray(prior);
   const counted = new Set(prior || []);
   const fresh = applicable.filter((a) => !counted.has(a.key));
-  const amount = base + fresh.reduce((n, a) => n + (Number(a.price) || 0), 0);
+  // PigPoints зрителя из таблицы в ту же ставку: плюс — всегда; минус — по галке (только свой/новый лот, либо везде)
+  const usePoints = s.movieUsePoints !== false; // get(null) не мерджит DEFAULTS → undefined = вкл
+  const dropNegForeign = s.movieDropNegForeign !== false; // не учитывать минус в общих лотах (по умолчанию да)
+  const pointsDone = counted.has('__points'); // PigPoints уже учтены в раунде на этого зрителя
+  const points = usePoints ? await getPoints(s, userLogin) : 0;
+  let lot = null;
+  if (usePoints && !pointsDone && Number.isFinite(points) && points < 0 && dropNegForeign) { // доску читаем, только когда минус и нужно отличить общий лот
+    try { lot = findMovieLot(await getMovieLots(s.token), movie, userLogin); }
+    catch { lot = { error: true }; } // getLots не удался → консервативно минус не применяем
+  }
+  const rdec = moviePointsDecision({ points, usePoints, alreadyApplied: pointsDone, lot, dropNegForeign });
+  const pointsApplied = rdec.value;
+  const amount = base + fresh.reduce((n, a) => n + (Number(a.price) || 0), 0) + pointsApplied;
   if (movieGen !== gen) { await setRedemption(ctx, s.movieRewardId, item.redemptionId, 'CANCELED'); return; } // раунд сброшен пока считали → возврат, без записи в новый
-  if (!((fresh.length || !participated) && amount > 0)) { // нет новых значков (уже участвовал) или сумма 0 → возврат
+  if (!((fresh.length || pointsApplied !== 0 || !participated) && amount > 0)) { // нет новых значков/рейтинга (уже участвовал) или сумма ≤ 0 → возврат
     const err = await setRedemption(ctx, s.movieRewardId, item.redemptionId, 'CANCELED');
-    return logMovie({ ok: false, refunded: true, userId: item.userId, userLogin, movie, note: err ? `возврат не прошёл: ${err}` : '' }, gen);
+    return logMovie({ ok: false, refunded: true, userId: item.userId, userLogin, movie, base, points, pointsApplied, ownership: rdec.ownership, pointsSkip: rdec.reason, amount, note: (amount <= 0 ? 'ставка ≤ 0 (минус рейтинга) — возврат' : '') + (err ? `${amount <= 0 ? ' · ' : ''}возврат не прошёл: ${err}` : '') }, gen);
   }
   let bidErr = '';
-  try { await postBids(s.token, [{ cost: amount, message: movie, username: userLogin, investorId: item.userId, insertStrategy: 'none', isDonation: !!s.movieAsDonation }]); }
+  // investorId = логин (не числовой userId): запись и чтение «единственного вкладчика» (findMovieLot) идут по одному ключу; так же в соцрейтинговой ветке и по README
+  try { await postBids(s.token, [{ cost: amount, message: movie, username: userLogin, investorId: userLogin || item.userId, insertStrategy: 'none', isDonation: !!s.movieAsDonation }]); }
   catch (e) { bidErr = e.message; }
   if (bidErr) { // ставка не ушла → возврат балла; значки НЕ зачтены (можно повторить)
     const err = await setRedemption(ctx, s.movieRewardId, item.redemptionId, 'CANCELED');
     return logMovie({ ok: false, refunded: true, userId: item.userId, userLogin, movie, note: `pointauc: ${bidErr}` + (err ? ` · возврат не прошёл: ${err}` : '') }, gen);
   }
   if (movieGen !== gen) { await setRedemption(ctx, s.movieRewardId, item.redemptionId, 'CANCELED'); return; } // раунд сбросили во время ставки → возврат балла, без зачёта (стрэглер-ставка уйдёт в очередь pointauc на ручной разбор)
-  await markMovieCounted(item.userId, fresh.map((a) => a.key), gen); // успех → пометить новые значки зачтёнными (если раунд не сброшен)
+  const countedKeys = fresh.map((a) => a.key);
+  if (pointsApplied !== 0) countedKeys.push('__points'); // рейтинг зачтён один раз за раунд на зрителя
+  await markMovieCounted(item.userId, countedKeys, gen); // успех → пометить новые значки + рейтинг зачтёнными (если раунд не сброшен)
   const err = await setRedemption(ctx, s.movieRewardId, item.redemptionId, 'FULFILLED');
-  return logMovie({ ok: true, userId: item.userId, userLogin, movie, badges: fresh.map((a) => ({ key: a.key, price: a.price })), amount, note: err ? `подтверждение Twitch не прошло: ${err}` : '' }, gen);
+  return logMovie({ ok: true, userId: item.userId, userLogin, movie, base, badges: fresh.map((a) => ({ key: a.key, price: a.price })), points, pointsApplied, ownership: rdec.ownership, pointsSkip: rdec.reason, amount, note: err ? `подтверждение Twitch не прошло: ${err}` : '' }, gen);
 }
 
 function markMovieCounted(userId, badgeKeys, gen) { // запоминаем зачтённые ключи (пустой массив тоже создаёт запись → «участвовал»)

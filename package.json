@@ -1,7 +1,7 @@
 {
   "name": "pigrating",
-  "version": "0.5.1",
-  "description": "Chrome-расширение: соцрейтинг свиноколеса для pointauc — заливает баллы из Google-таблицы в лоты",
+  "version": "0.6.0",
+  "description": "PigPoints — Chrome-расширение для pointauc: значки Twitch, балы канала и Google-таблица → ставки в лотах",
   "private": true,
   "type": "module",
   "scripts": {
