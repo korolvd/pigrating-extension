@@ -1,216 +1,34 @@
-import { DEFAULTS, LOT_PREFIX, fetchSheetRows, getLots, buildPlan, resolveChoice, buildRollbackPlan, parseSheetRef, buildAppsScript, healthCheck, normNick, MOVIE_BADGE_POOL, movieBadgeImage, expectedScriptConfig } from './core.js';
+import { DEFAULTS, fetchSheetRows, getLots, parseSheetRef, buildAppsScript, healthCheck, normNick, MOVIE_BADGE_POOL, movieBadgeImage, expectedScriptConfig } from './core.js';
 import { connectTwitch, syncRewards, syncReward, setRewardsEnabled, deleteReward, updateReward, getChatBadges, DEFAULT_TWITCH_CLIENT_ID } from './twitch.js';
 
-// ⚠️ DEPRECATED (на удаление) — ручной залив PigPoints из таблицы в лоты pointauc (Предпросмотр/Применить/Откатить).
-// UI убран, слушатели сняты → функции ниже не вызываются. Логика залива в core.js/background.js помечена так же.
-let currentPlan = null;       // план залива (предпросмотр)
-let currentSettings = null;   // настройки на момент предпросмотра/отката
-let currentLots = [];         // лоты на момент предпросмотра
-let currentRollback = null;   // список меток для отката
-let mode = 'apply';           // 'apply' | 'roll'
-let armed = false, armTimer = null; // подтверждение «Применить» вторым кликом
+// ─────────────────────────────────────────────────────────────────────────────
+// Карта видимости/гейтов UI. Каскад настройки таблицы:
+//   чтение (sheetUrl) → [ PigPoints-в-ставке + запись (webAppUrl) ] → награды для PigPoints
+//
+// Полностью СКРЫВАЕТСЯ (hidden / display:none):
+//   • чип «таблица» — есть sheetUrl;  чип «apps script» — есть sheetUrl && webAppUrl   (renderStatusStrip)
+//   • модуль «PigPoints» #pigpointsCard — (sheetUrl && webAppUrl) || twitchRewardsActive (updatePurchaseVisibility)
+//   • кнопка «Отключить» Twitch — когда подключён                                       (renderTwitchStatus)
+//   • подсказка #moviePointaucHint — только когда тумблер ставок включён                (syncMovieBar)
+//   • поле «столбец покупок» #buyColWrap — когда снята галка buySameCol                 (toggleBuyCol)
+//   • #pendingCount / #pendingBulk — когда очередь подтверждения непуста                (renderTwitchPending)
+//
+// ПРИГЛУШАЕТСЯ + неактивно (класс .off + подсказка), пока не настроено звено каскада:
+//   • #moviePointsCfg (PigPoints в ставке)   — нужен sheetUrl                  (updatePointsCfgVisibility) + #moviePointsHint
+//   • #purchaseCfg    (Покупка / Apps Script) — нужен sheetUrl                  (updatePurchaseCfg)         + #purchaseGateHint
+//   • #pigRewardsCfg  (Награды для PigPoints) — нужны sheetUrl && webAppUrl     (updatePigRewardsCfg)       + #pigRewardsHint (+ #addReward.disabled)
+//
+// Действие БЛОКИРУЕТСЯ (тумблер не включается, всплывает setStatus-ошибка):
+//   • rewardsActive — нужен Twitch + webAppUrl + непустой rewardMap            (onToggleRewards)
+//   • movieActive   — нужен Twitch                                            (onToggleMovieBids)
+//   • «Скопировать скрипт» — нужна ссылка на таблицу + валидные столбцы        (onCopyScript)
+// ─────────────────────────────────────────────────────────────────────────────
 
 const loadSettings = () => chrome.storage.local.get(DEFAULTS);
 const saveSettings = (patch) => chrome.storage.local.set(patch);
-
 const $ = (id) => document.getElementById(id);
-const setLabel = (id, text) => { const l = $(id).querySelector('.btn-label'); if (l) l.textContent = text; }; // менять подпись, не затирая SVG-иконку
 const syncRewardBar = () => $('rewardSwitch').classList.toggle('on', $('rewardsActive').checked); // зелёный значок награды при включённых
-const norm = (s) => (s || '').trim().toLowerCase();
 const setStatus = (msg, cls = '') => { const el = $('status'); el.textContent = msg; el.className = 'status ' + cls; };
-const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-
-const ACTION_LABEL = { update: '+ к лоту', create: 'новый лот', skip: 'пропуск', resolve: 'выбрать лот' };
-// Порядок: авто «+ к лоту» → много лотов → групповой → без лота → уже применено → пропуск.
-const SORT_KEY = (it) => {
-  if (it.action === 'update' || it.action === 'create') return 0;
-  if (it.action === 'resolve') { if (it.applied) return 4; const n = (it.candidates || []).length; return n >= 2 ? 1 : n === 1 ? 2 : 3; }
-  return 5;
-};
-
-// селект выбора лота: пропустить + кандидаты (★) + остальные лоты + новый лот
-function resolveSelect(it, idx) {
-  const candIds = new Set((it.candidates || []).map((c) => String(c.id)));
-  const cand = (it.candidates || []).map((c) => `<option value="lot:${esc(c.id)}">★ ${esc(c.name)} (${c.amount})</option>`);
-  const others = currentLots.filter((l) => l.name && !candIds.has(String(l.id))).map((l) => `<option value="lot:${esc(l.id)}">${esc(l.name)} (${l.amount ?? 0})</option>`);
-  return `<select class="resolve" data-idx="${idx}">${['<option value="skip">— пропустить —</option>', ...cand, ...others, '<option value="new">＋ новый лот</option>'].join('')}</select>`;
-}
-
-// ───────────────────────── таблица залива ─────────────────────────
-function renderApply(plan, withStatus) {
-  const rows = plan.map((it, idx) => {
-    const ptsCls = it.points < 0 ? 'neg' : it.points > 0 ? 'pos' : '';
-    const pts = Number.isFinite(it.points) ? (it.points > 0 ? '+' : '') + it.points : it.rawPoints;
-    const whereCell = (!withStatus && it.action === 'resolve') ? resolveSelect(it, idx) : esc(it.target || '');
-    const actClass = it.applied ? 'applied' : it.action;
-    const actLabel = it.applied ? '⚠ уже применено' : ACTION_LABEL[it.action];
-    const canUndo = it.applied || (withStatus && it.status === 'ok' && (it.action === 'update' || it.action === 'create'));
-    const undo = canUndo ? `<button class="undo" data-nick="${esc(it.nick)}" title="Откатить ${esc(it.nick)}" aria-label="Откатить ник"><svg class="ic"><use href="#ic-rollback"/></svg></button>` : '';
-    const statusCell = withStatus ? `<td><span class="tag ${it.status}">${it.status === 'ok' ? '✓' : it.status === 'error' ? '✕' : '—'}</span></td>` : '';
-    return `<tr>
-      <td>${esc(it.nick) || '<i>—</i>'}</td>
-      <td class="num ${ptsCls}">${pts}</td>
-      <td><span class="tag ${actClass}">${actLabel}</span></td>
-      <td>${whereCell}</td>
-      <td class="muted">${esc(it.reason || '')}</td>
-      <td class="act">${undo}</td>
-      ${statusCell}
-    </tr>`;
-  }).join('');
-  const counts = plan.reduce((a, it) => ((a[it.action] = (a[it.action] || 0) + 1), a), {});
-  const applied = plan.filter((it) => it.applied).length;
-  const summary = `+ к лоту: <b>${counts.update || 0}</b> · новых: <b>${counts.create || 0}</b> · выбрать лот: <b>${counts.resolve || 0}</b> · пропуск: <b>${counts.skip || 0}</b>${applied ? ` · ⚠ уже применено: <b>${applied}</b>` : ''}`;
-  $('result').innerHTML = `<div class="muted" style="margin:6px 0">${summary}</div>
-    <table><thead><tr><th>Ник</th><th class="num">Баллы</th><th>Действие</th><th>Куда</th><th>Примечание</th><th></th>${withStatus ? '<th>Итог</th>' : ''}</tr></thead><tbody>${rows}</tbody></table>`;
-}
-
-// ───────────────────────── таблица отката ─────────────────────────
-function renderRoll(items) {
-  if (!items.length) { $('result').innerHTML = '<div class="muted" style="margin:8px 0">Меток PigPoints на доске нет — откатывать нечего.</div>'; return; }
-  const rows = items.map((it, i) => {
-    const d = -it.amount; // изменение суммы лота при снятии
-    return `<tr>
-      <td class="act"><input type="checkbox" class="rcb" data-i="${i}" checked></td>
-      <td>${esc(it.lotName) || '<i>—</i>'}</td>
-      <td class="muted">${esc(it.investor)}</td>
-      <td class="num ${d < 0 ? 'neg' : 'pos'}">${d > 0 ? '+' : ''}${d}</td>
-    </tr>`;
-  }).join('');
-  $('result').innerHTML = `<div class="actions" style="margin-bottom:8px">
-      <button id="rollSel" class="danger">Снять выбранные (${items.length})</button>
-      <button id="rollAllBtn" class="ghost">Снять все</button>
-    </div>
-    <table><thead><tr><th class="act"><input type="checkbox" id="rallcb" checked></th><th>Лот</th><th>Метка</th><th class="num">Δ</th></tr></thead><tbody>${rows}</tbody></table>`;
-
-  const cbs = () => Array.from(document.querySelectorAll('.rcb'));
-  const upd = () => { $('rollSel').textContent = `Снять выбранные (${cbs().filter((c) => c.checked).length})`; };
-  cbs().forEach((c) => c.addEventListener('change', upd));
-  $('rallcb').addEventListener('change', (e) => { cbs().forEach((c) => (c.checked = e.target.checked)); upd(); });
-  $('rollSel').addEventListener('click', () => doRollback(cbs().filter((c) => c.checked).map((c) => items[+c.dataset.i])));
-  $('rollAllBtn').addEventListener('click', () => doRollback(items.slice()));
-}
-
-async function showLastApplied() {
-  const { lastApplied } = await chrome.storage.local.get('lastApplied');
-  $('lastApplied').textContent = lastApplied ? `Последнее применение: ${new Date(lastApplied.at).toLocaleString()} — изменено ${lastApplied.count}` : '';
-}
-
-// «Откатить» активна только если на доске есть метки PigPoints (+ показывает их число).
-// Доска обновляется с задержкой → если сразу после залива/отката меток 0, перепроверяем.
-async function refreshRollbackButton(retries = 2) {
-  const btn = $('rollback');
-  const s = await loadSettings();
-  if (!s.token) { btn.disabled = true; setLabel('rollback', 'Откатить'); return; }
-  try {
-    const n = buildRollbackPlan(await getLots(s.token)).length;
-    btn.disabled = n === 0;
-    setLabel('rollback', n ? `Откатить (${n})` : 'Откатить');
-    if (n === 0 && retries > 0) setTimeout(() => refreshRollbackButton(retries - 1), 800);
-  } catch {
-    // API не ответил (504/таймаут) — кнопку не выключаем, дадим шанс кликнуть и перепроверим
-    if (retries > 0) setTimeout(() => refreshRollbackButton(retries - 1), 800);
-  }
-}
-
-// ───────────────────────── предпросмотр залива ─────────────────────────
-async function onPreview() {
-  disarm(); mode = 'apply'; $('apply').disabled = true; $('result').innerHTML = '';
-  const s = await loadSettings();
-  if (!s.token) return setStatus('Укажи Personal Token в настройках.', 'error');
-  if (!s.sheetUrl) return setStatus('Укажи ссылку на таблицу в настройках.', 'error');
-  setStatus('Читаю таблицу и лоты…');
-  try {
-    const [rows, lots] = await Promise.all([fetchSheetRows(s.sheetUrl, s), getLots(s.token)]);
-    currentSettings = s; currentLots = lots;
-    currentPlan = buildPlan(rows, lots, s).sort((a, b) => SORT_KEY(a) - SORT_KEY(b));
-    renderApply(currentPlan, false);
-    const c = currentPlan.reduce((a, it) => ((a[it.action] = (a[it.action] || 0) + 1), a), {});
-    setStatus(`План: авто «+ к лоту» ${c.update || 0}${c.resolve ? `, выбрать лот ${c.resolve}` : ''}.`, 'ok');
-    $('apply').disabled = !currentPlan.some((it) => ['update', 'create', 'resolve'].includes(it.action));
-  } catch (e) { setStatus(e.message, 'error'); }
-}
-
-function finalize() {
-  const prefix = LOT_PREFIX;
-  const lotsById = Object.fromEntries(currentLots.map((l) => [String(l.id), l]));
-  return (currentPlan || []).map((it, idx) => {
-    if (it.action !== 'resolve') return it;
-    const sel = document.querySelector(`select.resolve[data-idx="${idx}"]`);
-    let choice = 'skip';
-    if (sel) { const v = sel.value; choice = v.startsWith('lot:') ? v.slice(4) : v; }
-    return resolveChoice(it, choice, prefix, lotsById);
-  });
-}
-
-// ───────────────────────── залив ─────────────────────────
-function disarm() { armed = false; clearTimeout(armTimer); $('apply').classList.remove('armed'); setLabel('apply', 'Применить'); }
-
-function onApplyClick() {
-  const finalPlan = finalize();
-  const actionable = finalPlan.filter((it) => it.action === 'update' || it.action === 'create').length;
-  if (!actionable) { disarm(); return setStatus('Нечего применять — разреши спорные ники или проверь план.'); }
-  if (!armed) { armed = true; $('apply').classList.add('armed'); setLabel('apply', `Точно? (${actionable})`); setStatus('Балы прибавляются — повтор удвоит. Нажми «Применить» ещё раз.'); armTimer = setTimeout(disarm, 5000); return; }
-  disarm(); sendApply(finalize());
-}
-
-async function sendApply(plan) {
-  $('apply').disabled = true; $('preview').disabled = true; $('rollback').disabled = true;
-  setStatus('Применяю… окно можно закрыть — идёт в фоне.');
-  try {
-    const resp = await chrome.runtime.sendMessage({ type: 'apply', plan });
-    if (resp?.error) throw new Error(resp.error);
-    const { lastResult } = await chrome.storage.local.get('lastResult');
-    if (lastResult?.plan) { mode = 'apply'; renderApply(lastResult.plan, true); }
-    await showLastApplied();
-    if (resp) setStatus(`Готово: успешно ${resp.ok}${resp.err ? `, ошибок ${resp.err}` : ''}.`, resp.err ? 'error' : 'ok');
-  } catch (e) { setStatus(e.message, 'error'); }
-  finally { $('preview').disabled = false; $('apply').disabled = false; refreshRollbackButton(); }
-}
-
-// ───────────────────────── откат ─────────────────────────
-async function onRollback() {
-  disarm(); mode = 'roll'; $('apply').disabled = true; $('result').innerHTML = '';
-  const s = await loadSettings();
-  if (!s.token) return setStatus('Укажи Personal Token в настройках.', 'error');
-  currentSettings = s;
-  setStatus('Сканирую доску…');
-  try {
-    const lots = await getLots(s.token);
-    currentLots = lots;
-    currentRollback = buildRollbackPlan(lots);
-    renderRoll(currentRollback);
-    setStatus(currentRollback.length ? `Меток на доске: ${currentRollback.length}. Отметь и сними.` : 'Меток PigPoints нет.', 'ok');
-  } catch (e) { setStatus(e.message, 'error'); }
-}
-
-async function doRollback(items) {
-  if (!items.length) return setStatus('Ничего не выбрано.');
-  $('preview').disabled = true; $('apply').disabled = true; $('rollback').disabled = true;
-  setStatus(`Откатываю… (${items.length})`);
-  try {
-    const resp = await chrome.runtime.sendMessage({ type: 'rollback', items });
-    if (resp?.error) throw new Error(resp.error);
-    setStatus(`Откат готов: лотов ${resp.ok}${resp.err ? `, ошибок ${resp.err}` : ''}.`, resp.err ? 'error' : 'ok');
-    await onRollback(); // пере-сканировать доску
-  } catch (e) { setStatus(e.message, 'error'); }
-  finally { $('preview').disabled = false; refreshRollbackButton(); }
-}
-
-// инлайн ↩ — откат одного ника (все его метки)
-async function undoNick(nick) {
-  const s = currentSettings || await loadSettings();
-  setStatus(`Откатываю ${nick}…`);
-  try {
-    const lots = await getLots(s.token);
-    const items = buildRollbackPlan(lots).filter((it) => norm(it.nick) === norm(nick));
-    if (!items.length) return setStatus(`У «${nick}» нет меток для отката.`);
-    const resp = await chrome.runtime.sendMessage({ type: 'rollback', items });
-    if (resp?.error) throw new Error(resp.error);
-    setStatus(`«${nick}» откачен.`, 'ok');
-    mode === 'roll' ? onRollback() : onPreview(); // обновить вид
-    refreshRollbackButton();
-  } catch (e) { setStatus(e.message, 'error'); }
-}
 
 // показать поле «столбец покупок» только когда галка «тот же столбец» снята
 function toggleBuyCol() { $('buyColWrap').style.display = $('buySameCol').checked ? 'none' : ''; }
@@ -235,39 +53,102 @@ function flashSaved() {
 }
 
 // ── строка статуса подключений (чипы) ──
-let webappState = 'off'; // 'ok' | 'err' | 'off'
+let webappState = 'off';   // 'ok' | 'err' | 'off' — запись (Apps Script)
+let sheetState = 'off';    // 'ok' | 'err' | 'off' — чтение таблицы (реальная доступность)
+let pointaucState = 'off'; // 'ok' | 'err' | 'off' — токен/API pointauc (реальная проверка через getLots)
 function chipHtml(label, ok, target, icon, iconColor) {
   const color = ok === 'ok' ? '#27ae60' : ok === 'err' ? '#eb5757' : '#5f6470';
   const ic = icon ? `<svg class="ic" style="color:${iconColor || 'currentColor'}"><use href="#${icon}"/></svg>` : '';
   return `<span class="chip" data-target="${target}"><span class="dot" style="background:${color}"></span>${ic}${escapeHtml(label)}</span>`;
 }
 function renderStatusStrip(s) {
-  $('statusStrip').innerHTML = [
-    chipHtml('pointauc', s.token ? 'ok' : 'off', 'token'),
-    chipHtml('таблица', (s.sheetUrl && s.sheetName) ? 'ok' : 'off', 'sheetUrl'),
-    chipHtml('веб-апп', webappState, 'webAppUrl'),
+  const chips = [
+    chipHtml('pointauc', s.token ? pointaucState : 'off', 'token'),
     chipHtml(s.twitchLogin || 'Twitch', s.twitchToken ? 'ok' : 'off', 'twitchConnect', 'ic-twitch', '#a970ff'),
-  ].join('');
+  ];
+  if (String(s.sheetUrl || '').trim()) chips.push(chipHtml('таблица', sheetState, 'sheetUrl'));       // только если настроено чтение
+  if (String(s.webAppUrl || '').trim() && String(s.sheetUrl || '').trim()) chips.push(chipHtml('apps script', webappState, 'webAppUrl')); // запись активна только при чтении
+  $('statusStrip').innerHTML = chips.join('');
 }
 async function refreshStrip() { renderStatusStrip(await loadSettings()); }
 
-// ── хелсчек веб-аппа: индикатор «работает / ошибка» ──
+// ── хелсчек Apps Script: индикатор «работает / ошибка» ──
 async function runHealthCheck() {
   const el = $('webAppHealth');
   const url = $('webAppUrl').value.trim();
   const secret = $('webAppSecret').value.trim();
-  if (!url) { el.textContent = ''; el.className = 'health'; webappState = 'off'; refreshStrip(); return; }
+  if (!url || !$('sheetUrl').value.trim()) { el.textContent = ''; el.className = 'health'; webappState = 'off'; refreshStrip(); return; } // запись неактивна без чтения → не проверяем
   el.innerHTML = '<span class="dot" style="background:#9aa3b2"></span> проверяю…'; el.className = 'health pending';
   try {
     const r = await healthCheck(url, secret);
     const exp = expectedScriptConfig({ nickCol: $('nickCol').value, pointsCol: $('pointsCol').value, firstRow: $('firstRow').value, sheetName: $('sheetName').value, buySameCol: $('buySameCol').checked, buyPointsCol: $('buyPointsCol').value });
-    const stale = r.pointsCol != null && (r.pointsCol !== exp.pointsCol || r.nickCol !== exp.nickCol || r.firstRow !== exp.firstRow || (r.sheet || '') !== exp.sheetName); // задеплоенный скрипт не совпал с настройками
-    if (stale) { el.innerHTML = '<span class="dot" style="background:#f2c94c"></span> ⚠ скрипт устарел (столбцы/лист не совпадают) — пере-скопируй и задеплой новую версию'; el.className = 'health err'; webappState = 'err'; }
+    const sheetMismatch = r.sheet != null && r.sheet !== exp.sheetName;                                            // имя листа скрипт отдаёт всегда (даже когда лист не найден)
+    const colsMismatch = r.pointsCol != null && (r.pointsCol !== exp.pointsCol || r.nickCol !== exp.nickCol || r.firstRow !== exp.firstRow); // столбцы — только если скрипт их сообщает (старые не отдают)
+    const stale = sheetMismatch || colsMismatch;                                                                   // задеплоенный скрипт разошёлся с настройками
+    if (stale) { el.innerHTML = '<span class="dot" style="background:#f2c94c"></span> ⚠ скрипт устарел (имя листа/столбцы не совпадают) — пере-скопируй и задеплой новую версию'; el.className = 'health err'; webappState = 'err'; }
+    else if (r.sheetFound === false) { el.innerHTML = `<span class="dot" style="background:#eb5757"></span> лист «${escapeHtml(r.sheet)}» не найден — переименуй вкладку или поправь «Имя листа»`; el.className = 'health err'; webappState = 'err'; }
     else { el.innerHTML = `<span class="dot" style="background:#27ae60"></span> работает — лист «${escapeHtml(r.sheet)}» найден`; el.className = 'health ok'; webappState = 'ok'; }
   } catch (e) {
     el.innerHTML = `<span class="dot" style="background:#eb5757"></span> ${escapeHtml(e.message)}`; el.className = 'health err'; webappState = 'err';
   }
   refreshStrip();
+}
+
+// ── проверка pointauc: валиден ли токен и отвечает ли API (через getLots) ──
+async function runPointaucCheck() {
+  const el = $('tokenHealth');
+  const token = $('token').value.trim();
+  if (!token) { el.textContent = ''; el.className = 'health'; pointaucState = 'off'; refreshStrip(); return; }
+  el.innerHTML = '<span class="dot" style="background:#9aa3b2"></span> проверяю…'; el.className = 'health pending';
+  try {
+    const lots = await getLots(token);
+    el.innerHTML = `<span class="dot" style="background:#27ae60"></span> токен работает — лотов на доске: ${lots.length}`; el.className = 'health ok'; pointaucState = 'ok';
+  } catch (e) {
+    el.innerHTML = `<span class="dot" style="background:#eb5757"></span> ${escapeHtml(e.message)}`; el.className = 'health err'; pointaucState = 'err';
+  }
+  refreshStrip();
+}
+
+// ── проверка ЧТЕНИЯ таблицы: реально ли доступна (фетч CSV-экспорта) ──
+async function runSheetCheck() {
+  const el = $('sheetHealth');
+  const url = $('sheetUrl').value.trim();
+  if (!url) { el.textContent = ''; el.className = 'health'; sheetState = 'off'; refreshStrip(); return; }
+  el.innerHTML = '<span class="dot" style="background:#9aa3b2"></span> проверяю…'; el.className = 'health pending';
+  try {
+    const rows = await fetchSheetRows(url, { nickCol: $('nickCol').value.trim() || 'A', pointsCol: $('pointsCol').value.trim() || 'B', firstRow: parseInt($('firstRow').value, 10) || 2 });
+    el.innerHTML = `<span class="dot" style="background:#27ae60"></span> читается — строк: ${rows.length}`; el.className = 'health ok'; sheetState = 'ok';
+  } catch (e) {
+    el.innerHTML = `<span class="dot" style="background:#eb5757"></span> ${escapeHtml(e.message)}`; el.className = 'health err'; sheetState = 'err';
+  }
+  refreshStrip();
+  renderMoviePointsSrc(); // статус в модуле лота зависит от доступности таблицы
+}
+
+// модуль «PigPoints» показываем, когда настроен весь конвейер (чтение + запись) ИЛИ награды уже активны
+// (страховка: включённую покупку не прячем, даже если настройку потом сломали — чтобы выключить/видеть очередь)
+function updatePurchaseVisibility(s) {
+  const show = (!!String(s.sheetUrl || '').trim() && !!String(s.webAppUrl || '').trim()) || !!s.twitchRewardsActive;
+  const card = $('pigpointsCard'); if (card) card.hidden = !show;
+}
+// галки PigPoints-в-ставке активны только при подключённой таблице (чтение); иначе приглушены + подсказка
+function updatePointsCfgVisibility(s) {
+  const has = !!String(s.sheetUrl || '').trim();
+  const el = $('moviePointsCfg'); if (el) el.classList.toggle('off', !has);
+  const hint = $('moviePointsHint'); if (hint) hint.hidden = has;
+}
+// конфиг «Награды для PigPoints» доступен только при настроенной записи (Apps Script) — иначе покупки некуда писать
+function updatePigRewardsCfg(s) {
+  const has = !!String(s.webAppUrl || '').trim() && !!String(s.sheetUrl || '').trim(); // нужны и чтение, и запись — весь конвейер таблицы
+  const cfg = $('pigRewardsCfg'); if (cfg) cfg.classList.toggle('off', !has);
+  const hint = $('pigRewardsHint'); if (hint) hint.hidden = has;
+  const add = $('addReward'); if (add) add.disabled = !has;
+}
+// блок записи (покупка PigPoints) активен только при настроенном чтении (Ссылка на таблицу) — покупки пишутся в ту же таблицу
+function updatePurchaseCfg(s) {
+  const has = !!String(s.sheetUrl || '').trim();
+  const cfg = $('purchaseCfg'); if (cfg) cfg.classList.toggle('off', !has);
+  const hint = $('purchaseGateHint'); if (hint) hint.hidden = has;
 }
 
 // ── маппинг наград Twitch → PigPoints (динамические строки таблицы) ──
@@ -306,6 +187,7 @@ async function onToggleRewards() {
   syncRewardBar();
   const s = await loadSettings();
   if (!s.twitchToken || !s.twitchUserId) { $('rewardsActive').checked = false; syncRewardBar(); return setStatus('Сначала подключи Twitch.', 'error'); }
+  if (active && !String(s.webAppUrl || '').trim()) { $('rewardsActive').checked = false; syncRewardBar(); return setStatus('Сначала настрой запись в таблицу (Apps Script) — без неё покупки не запишутся.', 'error'); }
   const rows = readRewardMap();
   if (active && !rows.length) { $('rewardsActive').checked = false; syncRewardBar(); return setStatus('Нет наград в таблице.', 'error'); }
   const ctx = { clientId: s.twitchClientId || DEFAULT_TWITCH_CLIENT_ID, token: s.twitchToken, broadcasterId: s.twitchUserId };
@@ -313,7 +195,7 @@ async function onToggleRewards() {
   try {
     let res;
     if (active) {
-      res = await syncRewards(ctx, rows, [s.movieRewardId].filter(Boolean)); // не снести награду «Предложить фильм» при зачистке
+      res = await syncRewards(ctx, rows, [s.movieRewardId].filter(Boolean)); // не снести награду «Предложить лот» при зачистке
       const persist = res.map(({ rewardId, rewardTitle, cost, points, target }) => ({ rewardId: rewardId || '', rewardTitle, cost, points, target }));
       await saveSettings({ rewardMap: persist, twitchRewardsActive: true });
       renderRewardMap(persist);
@@ -328,13 +210,14 @@ async function onToggleRewards() {
     $('rewardsActive').checked = !active; syncRewardBar(); // откат визуального состояния
     setStatus(`Twitch: ${e.message}`, 'error');
   }
+  updatePurchaseVisibility(await loadSettings());
 }
 
-// ── фича «ставка за значки на фильм» ──
+// ── фича «ставка за значки на лот» ──
 let badgeImgMap = {}; // set_id→version→url из Twitch Helix (getChatBadges); грузится при подключённом Twitch
 function badgeImgHtml(pool) {
   const url = pool ? movieBadgeImage(pool, badgeImgMap) : null;
-  return url ? `<img class="badge-ic" src="${escapeHtml(url)}" alt="" loading="lazy" />` : '<span class="badge-ic badge-none" title="нет значка Twitch">—</span>';
+  return url ? `<img class="badge-ic" src="${escapeHtml(url)}" alt="" loading="lazy" />` : '<span class="badge-ic badge-none" title="нет значка чата">—</span>';
 }
 function movieBadgeRowHtml(b) {
   const pool = MOVIE_BADGE_POOL.find((p) => p.key === b.key);
@@ -347,7 +230,7 @@ function movieBadgeRowHtml(b) {
 }
 function renderMovieBadges(list) {
   const rows = Array.isArray(list) ? list : [];
-  $('movieBadgeList').innerHTML = rows.length ? rows.map(movieBadgeRowHtml).join('') : '<div class="muted" style="font-size:11px">пока ничего — добавь значок ниже</div>';
+  $('movieBadgeList').innerHTML = rows.length ? rows.map(movieBadgeRowHtml).join('') : '';
 }
 function readMovieBadges() {
   return [...document.querySelectorAll('#movieBadgeList .mbadge-row')].map((r) => ({ key: r.dataset.key, price: parseInt(r.querySelector('.mb-price').value, 10) || 0 }));
@@ -372,40 +255,41 @@ async function loadBadgeImages() {
     if (map && Object.keys(map).length) { badgeImgMap = map; await saveSettings({ badgeImages: map }); rerenderBadges(); }
   } catch { /* иконок не будет — не критично */ }
 }
-async function saveMovie() { await saveSettings({ movieRewardTitle: $('movieRewardTitle').value.trim() || 'Предложить фильм', movieBase: parseInt($('movieBase').value, 10) || 0, movieAsDonation: $('movieAsDonation').checked, movieUsePoints: $('movieUsePoints').checked, movieDropNegForeign: $('movieDropNegForeign').checked, movieBadges: readMovieBadges() }); flashSaved(); renderMoviePointsSrc(); }
+async function saveMovie() { await saveSettings({ movieRewardTitle: $('movieRewardTitle').value.trim() || 'Предложить лот', movieBase: parseInt($('movieBase').value, 10) || 0, movieAsDonation: $('movieAsDonation').checked, movieUsePoints: $('movieUsePoints').checked, movieDropNegForeign: $('movieDropNegForeign').checked, movieBadges: readMovieBadges() }); flashSaved(); renderMoviePointsSrc(); }
 function syncMovieBar() { const on = $('movieActive').checked; $('movieSwitch').classList.toggle('on', on); const h = $('moviePointaucHint'); if (h) h.hidden = !on; } // напоминание про приём ставок в pointauc — только когда ставки включены
 // Статус источника PigPoints в модуле (под тумблером): вкл/выкл + подключена ли таблица.
 function renderMoviePointsSrc(s) {
   const el = $('moviePointsSrc'); if (!el) return;
   const use = s ? s.movieUsePoints !== false : $('movieUsePoints').checked;
   const hasSheet = !!((s ? s.sheetUrl : $('sheetUrl').value) || '').trim();
-  if (!use) { el.textContent = 'PigPoints в ставке: выкл'; el.className = 'health'; }
-  else if (!hasSheet) { el.textContent = '⚠ PigPoints: таблица не подключена — только база и значки'; el.className = 'health err'; }
-  else { el.textContent = '✓ PigPoints: из таблицы (плюс всегда, минус — свой лот)'; el.className = 'health ok'; }
+  if (!hasSheet) { el.textContent = 'ставка: база + значки чата (таблица не используется)'; el.className = 'health'; } // значки-only — валидный режим, не ошибка
+  else if (!use) { el.textContent = 'PigPoints в ставке: выкл'; el.className = 'health'; }
+  else if (sheetState === 'err') { el.textContent = '⚠ таблица недоступна — пока только база и значки чата'; el.className = 'health err'; }
+  else { el.textContent = '✓ PigPoints: из таблицы'; el.className = 'health ok'; }
 }
 
-// тумблер фичи: вкл → создать/включить награду «Предложить фильм» (новый раунд); выкл → выключить
+// тумблер фичи: вкл → создать/включить награду «Предложить лот» (новый раунд); выкл → выключить
 async function onToggleMovieBids() {
   const active = $('movieActive').checked;
   syncMovieBar();
   const s = await loadSettings();
   if (!s.twitchToken || !s.twitchUserId) { $('movieActive').checked = false; syncMovieBar(); return setStatus('Сначала подключи Twitch.', 'error'); }
   const ctx = { clientId: s.twitchClientId || DEFAULT_TWITCH_CLIENT_ID, token: s.twitchToken, broadcasterId: s.twitchUserId };
-  const title = ($('movieRewardTitle').value || 'Предложить фильм').trim(); // из поля (могли только что поменять)
+  const title = ($('movieRewardTitle').value || 'Предложить лот').trim(); // из поля (могли только что поменять)
   setStatus(active ? `Создаю награду «${title}»…` : 'Выключаю награду…');
   try {
     if (active) {
-      const reward = await syncReward(ctx, { rewardId: s.movieRewardId || '', rewardTitle: title, cost: 1, points: 0, target: 'input', prompt: 'Напиши название фильма' });
+      const reward = await syncReward(ctx, { rewardId: s.movieRewardId || '', rewardTitle: title, cost: 1, points: 0, target: 'input', prompt: 'Напиши название лота' });
       await saveSettings({ movieRewardId: reward.id, movieBidsActive: true, movieRewardTitle: title, movieBase: parseInt($('movieBase').value, 10) || 0, movieAsDonation: $('movieAsDonation').checked });
       await chrome.runtime.sendMessage({ type: 'movie-new-round' }).catch(() => {}); // сброс раунда атомарно в фоне (очередь + зачёт + журнал + кэши)
       chrome.runtime.sendMessage({ type: 'movie-subscribe' }).catch(() => {}); // поднять чат-подписку на текущей сессии
       renderMovieJournal([]);
-      setStatus(`Награда «${title}» активна. Не забудь включить приём ставок за баллы канала в pointauc (▶).`, 'ok');
+      setStatus(`Награда «${title}» активна.`, 'ok');
     } else {
       let warn = '';
       if (s.movieRewardId) { try { await updateReward(ctx, s.movieRewardId, { is_enabled: false }); } catch (err) { warn = ` (⚠ могла остаться активной: ${err.message})`; } }
       await saveSettings({ movieBidsActive: false }); // id сохраняем (keepExtra защитит, можно снова включить)
-      setStatus('Награда «Предложить фильм» выключена.' + warn, warn ? 'error' : 'ok');
+      setStatus('Награда «Предложить лот» выключена.' + warn, warn ? 'error' : 'ok');
     }
   } catch (e) {
     $('movieActive').checked = !active; syncMovieBar();
@@ -449,10 +333,11 @@ function renderTwitchPending(list) {
   $('pendingCount').style.display = rows.length ? 'inline-block' : 'none';
   $('pendingBulk').style.display = rows.length ? '' : 'none';
   card.classList.toggle('has-items', rows.length > 0);
-  if (rows.length > prevPendingCount) { card.open = true; const pr = $('pigpointsCard'); if (pr) pr.open = true; } // всплываем только при НОВОЙ заявке (раскрываем и свёрнутый модуль «PigPoints · таблица»)
+  { const pr = $('pigpointsCard'); if (pr) pr.classList.toggle('has-pending', rows.length > 0); } // подсветить свёрнутый модуль, когда есть заявки
+  if (rows.length > prevPendingCount) { card.open = true; const pr = $('pigpointsCard'); if (pr) pr.open = true; } // всплываем только при НОВОЙ заявке
   prevPendingCount = rows.length;
   const el = $('twitchPending');
-  if (!rows.length) { el.innerHTML = '<div class="muted" style="font-size:11px">пока нет</div>'; return; }
+  if (!rows.length) { el.innerHTML = '<div class="muted" style="font-size:11px">пока пусто</div>'; return; }
   el.innerHTML = rows.map((p) => {
     const buyer = normNick(p.userLogin);
     const who = (buyer && buyer !== p.nick) ? `<span class="muted">@${escapeHtml(buyer)} →</span> ` : ''; // кто→кому
@@ -545,12 +430,12 @@ async function onCopyScript() {
   if (!(await copyToClipboard(script))) return setStatus('Не удалось скопировать в буфер — попробуй ещё раз.', 'error');
   $('webAppSecret').value = secret;                                        // секрет фиксируем только после успешного копирования
   await saveSettings({ ...cfg, webAppSecret: secret });                   // настройки = то, что зашито в скопированный скрипт (без рассинхрона с заливом)
-  setStatus(`Скрипт скопирован, секрет ${newSecret ? 'сгенерён и ' : ''}сохранён. Вставь в Apps Script → Deploy (Web app: Me/Anyone) → вставь URL сюда.`, 'ok');
+  setStatus(`Скрипт скопирован, секрет ${newSecret ? 'сгенерён и ' : ''}сохранён. Вставь в Apps Script → Deploy (Web app: Me/Anyone) → и вставь URL сюда.`, 'ok');
 }
 
 // сообщения от worker (прогресс/итог, если окно открыто)
 chrome.runtime.onMessage.addListener((m) => {
-  if (m?.type === 'progress') setStatus(`Идёт… ${m.done}/${m.total}`);
+  if (m?.type === 'progress') setStatus(`Обрабатываю… ${m.done}/${m.total}`);
   else if (m?.type === 'error') setStatus(m.message, 'error');
   else if (m?.type === 'twitch-log') loadSettings().then((s) => renderTwitchLog(s.twitchLog));
   else if (m?.type === 'twitch-pending') loadSettings().then((s) => renderTwitchPending(s.twitchPending));
@@ -578,6 +463,12 @@ async function init() {
   renderMoviePointsSrc(s);
   if (!s.token || !s.sheetUrl) $('settings').open = true;
   if (s.webAppUrl) runHealthCheck();
+  if (s.sheetUrl) runSheetCheck();
+  if (s.token) runPointaucCheck();
+  updatePurchaseVisibility(s);
+  updatePointsCfgVisibility(s);
+  updatePigRewardsCfg(s);
+  updatePurchaseCfg(s);
 
   // авто-сохранение: любое изменение поля в настройках сразу пишется в storage (input — с задержкой, change — сразу)
   $('settings').addEventListener('input', () => { clearTimeout(saveTimer); saveTimer = setTimeout(saveAll, 400); renderMoviePointsSrc(); });
@@ -585,11 +476,18 @@ async function init() {
     await saveAll();
     refreshStrip();                                                          // токен/таблица/twitch — обновить чипы статуса
     renderMoviePointsSrc();                                                  // таблица подключена/нет → статус PigPoints в модуле
+    { const ns = await loadSettings(); updatePurchaseVisibility(ns); updatePointsCfgVisibility(ns); updatePigRewardsCfg(ns); updatePurchaseCfg(ns); } // запись → модуль покупок + награды PigPoints; таблица → настройки PigPoints + блок записи
+    if (['sheetUrl', 'nickCol', 'pointsCol', 'firstRow'].includes(e.target.id)) runSheetCheck();                                                  // влияет на чтение CSV
+    if (['sheetUrl', 'sheetName', 'nickCol', 'pointsCol', 'firstRow', 'buySameCol', 'buyPointsCol'].includes(e.target.id) && $('webAppUrl').value.trim()) runHealthCheck(); // влияет на скрипт/гейт записи → детект «устарел»
+    if (e.target.id === 'token') runPointaucCheck();
   });
   $('webAppUrl').addEventListener('change', runHealthCheck);
   $('webAppHealth').addEventListener('click', runHealthCheck);
+  $('sheetHealth').addEventListener('click', runSheetCheck);
+  $('tokenHealth').addEventListener('click', runPointaucCheck);
   $('copyScript').addEventListener('click', onCopyScript);
-  $('howto').addEventListener('click', () => chrome.tabs.create({ url: chrome.runtime.getURL('help.html') }));
+  $('howto').addEventListener('click', () => chrome.tabs.create({ url: chrome.runtime.getURL('help.html#install') }));
+  $('helpBtn').addEventListener('click', () => chrome.tabs.create({ url: chrome.runtime.getURL('help.html') }));
   $('settingsBtn').addEventListener('click', () => { $('settings').open = true; $('settings').scrollIntoView({ behavior: 'smooth', block: 'start' }); });
   $('buySameCol').addEventListener('change', toggleBuyCol);
   $('addReward').addEventListener('click', () => $('rewardMap').querySelector('tbody').insertAdjacentHTML('beforeend', rewardRowHtml()));
@@ -634,12 +532,14 @@ async function init() {
   $('clearLog').addEventListener('click', () => chrome.runtime.sendMessage({ type: 'twitch-log-clear' }).catch(() => {}));
   $('autoApprove').addEventListener('change', async () => { await saveSettings({ twitchAutoApprove: $('autoApprove').checked }); renderTwitchPending((await loadSettings()).twitchPending); });
   $('autoCtl').addEventListener('click', (e) => e.stopPropagation()); // клик по тумблеру в шапке не сворачивает карточку
-  $('statusStrip').addEventListener('click', (e) => {                        // клик по чипу → открыть нужную секцию настроек
-    const c = e.target.closest('.chip'); if (!c) return;
-    $('settings').open = true;
-    const el = document.getElementById(c.dataset.target);
-    if (el) { const card = el.closest('details'); if (card && card !== $('settings')) card.open = true; el.scrollIntoView({ block: 'center' }); el.focus?.(); }
-  });
+  $('statusStrip').addEventListener('click', (e) => { const c = e.target.closest('.chip'); if (c) gotoSetting(c.dataset.target); }); // чип → секция настроек
+  document.addEventListener('click', (e) => { const l = e.target.closest('.settings-link'); if (l) gotoSetting(l.dataset.target); }); // «⚙ настроить» в модуле → секция настроек
+}
+// открыть Настройки и проскроллить к нужному полю/секции
+function gotoSetting(id) {
+  $('settings').open = true;
+  const el = document.getElementById(id);
+  if (el) { const card = el.closest('details'); if (card && card !== $('settings')) card.open = true; el.scrollIntoView({ block: 'center' }); el.focus?.(); }
 }
 
 init();

@@ -1,6 +1,6 @@
 {
   "name": "pigrating",
-  "version": "0.6.0",
+  "version": "1.0.0",
   "description": "PigPoints — Chrome-расширение для pointauc: значки Twitch, балы канала и Google-таблица → ставки в лотах",
   "private": true,
   "type": "module",

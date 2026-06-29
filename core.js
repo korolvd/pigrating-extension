@@ -10,9 +10,6 @@ export const DEFAULTS = {
   firstRow: 2,            // номер первой строки с данными (1-based, как в таблице)
   nickCol: 'A',           // столбец с ником
   pointsCol: 'B',         // столбец с баллами
-  allowNegative: true,
-  skipZero: true,
-  asDonation: false,      // слать ставки как донат (isDonation: true) — применится конвертация аука
   sheetName: '',          // имя вкладки для записи (необязательно): если задано — скрипт ищет лист по имени, иначе по gid из ссылки
   webAppUrl: '',          // Apps Script Web App для записи баллов (покупка рейтинга за балы канала)
   webAppSecret: '',       // секрет веб-аппа (тот же, что в скрипте); генерится кнопкой «Скопировать скрипт»
@@ -21,11 +18,11 @@ export const DEFAULTS = {
   rewardMap: [],          // награды Twitch → рейтинг: [{ rewardId, rewardTitle, cost, points, target:'self'|'input' }] (cost — цена в балах канала; расширение само создаёт награды)
   twitchRewardsActive: false, // мастер-переключатель: награды созданы и включены на Twitch
   twitchAutoApprove: true,    // авто-начисление покупок (кроме ненайденных на Twitch ников — те на подтверждение)
-  // фича «ставка за значки на фильм» (отдельно от соцрейтинга)
-  movieBidsActive: false,     // вкл/выкл награды «Предложить фильм»
+  // фича «ставка за значки на лот» (отдельно от соцрейтинга)
+  movieBidsActive: false,     // вкл/выкл награды «Предложить лот»
   movieBase: 1,               // база, прибавляемая к сумме цен значков
-  movieRewardTitle: 'Предложить фильм', // название награды (редактируется стримером)
-  movieAsDonation: false,     // слать ставку как донат (pointauc применит конвертацию деньги→баллы)
+  movieRewardTitle: 'Предложить лот', // название награды (редактируется стримером)
+  movieAsDonation: true,      // ставка за лот уходит как донат (pointauc применит конвертацию деньги→баллы); по умолчанию вкл
   movieUsePoints: true,       // прибавлять PigPoints зрителя из таблицы к ставке за значки (плюс всегда; минус — по галке ниже)
   movieDropNegForeign: true,  // не учитывать отрицательные PigPoints в общих (чужих) лотах; выкл → минус учитывается везде
   movieRewardId: '',          // id созданной награды на Twitch
@@ -165,8 +162,7 @@ export async function healthCheck(url, secret) {
     if (data.error === 'bad input') throw new Error('старый скрипт — пересними кнопкой и задеплой заново (New deployment)');
     throw new Error(data.error || 'ошибка');
   }
-  if (data.sheetFound === false) throw new Error(`лист «${data.sheet}» не найден`);
-  return data;
+  return data; // sheetFound решает вызывающий: «скрипт устарел» (имя/столбцы не совпали) важнее «лист не найден»
 }
 
 // ───────────────────────── Twitch: маппинг наград → рейтинг ─────────────────────────
@@ -355,26 +351,13 @@ export function buildAppsScript(s, secret) {
   ].join('\n');
 }
 
-// ───────────────────────── построение плана ─────────────────────────
+// ───────────────────────── метки инвесторов: нормализация + детект метки [PP] (для findMovieLot) ─────────────────────────
 export const norm = (s) => (s || '').trim().toLowerCase();
-// Инвестор-метка рейтинга: "<префикс>ник:сумма" (сумма зашита в имя — для отката).
-const isMark = (inv, prefix) => { const p = norm(prefix); return !!p && norm(inv).startsWith(p); };
-export const markName = (prefix, nick, points) => `${prefix}${nick}:${points}`;
-// Разобрать метку → { nick, amount } | null. Понимает старый формат без ":сумма" (amount = NaN).
-export function parseMark(investor, prefix) {
-  const inv = (investor || '').trim();
-  const p = (prefix || '').trim();
-  if (!p || inv.toLowerCase().indexOf(p.toLowerCase()) !== 0) return null;
-  const rest = inv.slice(p.length).replace(/^\s+/, '');
-  const i = rest.lastIndexOf(':');
-  if (i < 0) return { nick: rest, amount: NaN };
-  const amount = parseInt(rest.slice(i + 1), 10);
-  return { nick: rest.slice(0, i).trim(), amount: Number.isFinite(amount) ? amount : NaN };
-}
+const isMark = (inv, prefix) => { const p = norm(prefix); return !!p && norm(inv).startsWith(p); }; // метка-инвестор [PP]…:сумма — не реальный вкладчик
 
 // ───────────────────────── ставка за значки + рейтинг: детект «свой/чужой» ─────────────────────────
-// Фаззи-матч названия фильма по доске (та же метрика, что «похожий лот» в pointauc) + «единственный
-// реальный вкладчик» (как buildPlan, метки [PP] не считаем). login — twitch-логин зрителя.
+// Фаззи-матч названия лота по доске (та же метрика, что «похожий лот» в pointauc) + «единственный
+// реальный вкладчик» (метки [PP] не считаем за вкладчиков). login — twitch-логин зрителя.
 // → { isNew, isSole, matchedName, score }.
 export function findMovieLot(lots, title, login, prefix = LOT_PREFIX, threshold = 0.4) {
   let best = null, score = 0;
@@ -402,123 +385,4 @@ export function moviePointsDecision({ points, usePoints, alreadyApplied, lot, dr
   if (lot.isNew) return { value: points, ownership: 'new', reason: '' };
   if (lot.isSole) return { value: points, ownership: 'sole', reason: '' };
   return { value: 0, ownership: 'foreign', reason: 'минус не учтён: поддув в общий лот' };
-}
-
-// ⚠️ DEPRECATED (на удаление): ручной залив PigPoints из таблицы в лоты — buildPlan/resolveChoice/executePlan/
-// buildRollbackPlan/planRollbackPuts/executeRollback/updateLot. UI убран; авто-формула фильм-ставки это заменяет.
-export function buildPlan(rows, lots, s) {
-  const prefix = LOT_PREFIX;
-  const effInvestors = (l) => (l.investors || []).filter((inv) => !isMark(inv, prefix)); // реальные вкладчики
-
-  return rows.map((r) => {
-    const it = { nick: r.nick, points: r.points, rawPoints: r.rawPoints, investor: markName(prefix, r.nick, r.points), isDonation: !!s.asDonation };
-
-    if (!r.nick) return Object.assign(it, { action: 'skip', reason: 'пустой ник' });
-    if (!Number.isFinite(r.points)) return Object.assign(it, { action: 'skip', reason: `не число: "${r.rawPoints}"` });
-    if (r.points === 0 && s.skipZero) return Object.assign(it, { action: 'skip', reason: 'ноль' });
-    if (r.points < 0 && !s.allowNegative) return Object.assign(it, { action: 'skip', reason: 'минус выключен' });
-
-    // совпадение по реальному вкладчику (метки [PP] не учитываем)
-    const matched = lots.filter((l) => effInvestors(l).some((inv) => norm(inv) === norm(r.nick)));
-    const candidates = matched.map((l) => ({ id: l.id, fastId: l.fastId, name: l.name, amount: l.amount }));
-
-    // уже залито: где-то есть инвестор-метка этого ника → предупреждаем, по умолчанию пропуск
-    const appliedLot = prefix ? lots.find((l) => (l.investors || []).some((inv) => { const m = parseMark(inv, prefix); return m && norm(m.nick) === norm(r.nick); })) : null;
-    if (appliedLot) {
-      return Object.assign(it, { action: 'resolve', applied: true, candidates, reason: `уже залито (от ${it.investor}) — выбери` });
-    }
-
-    // Единственный реальный вкладчик одного лота → автоматически «+ к лоту».
-    if (matched.length === 1 && effInvestors(matched[0]).length <= 1) {
-      const lot = matched[0];
-      return Object.assign(it, { action: 'update', lotId: lot.id, fastId: lot.fastId, target: lot.name, reason: 'единственный вкладчик' });
-    }
-
-    // Остальное (нет лота / групповой лот / ник в нескольких лотах) — лот выбирается в окне.
-    const reason = matched.length === 0
-      ? 'нет лота — выбери лот'
-      : matched.length === 1
-        ? `групповой лот «${matched[0].name}» — выбери лот`
-        : `ник в ${matched.length} лотах — выбери лот`;
-    return Object.assign(it, { action: 'resolve', candidates, reason });
-  });
-}
-
-// Применяет выбор пользователя к пункту resolve. choice: 'skip' | 'new' | <lotId>.
-// lotsById — карта id→лот (с fastId) для лотов вне кандидатов (когда выбирается любой лот).
-export function resolveChoice(it, choice, prefix = LOT_PREFIX, lotsById = {}) {
-  if (it.action !== 'resolve') return it;
-  if (choice === 'new') return { ...it, action: 'create', target: prefix + it.nick };
-  if (choice && choice !== 'skip') {
-    const id = String(choice);
-    const c = (it.candidates || []).find((x) => String(x.id) === id) || lotsById[id];
-    return { ...it, action: 'update', lotId: id, fastId: c ? c.fastId : undefined, target: c ? c.name : id };
-  }
-  return { ...it, action: 'skip' };
-}
-
-// ───────────────────────── выполнение ─────────────────────────
-// Всё применяется ставками (POST /bids) одним батчем, инвестор/автор у всех — it.investor:
-//  • «+ к лоту» / выбранный лот → message "#fastId", insertStrategy "match";
-//  • «новый лот» → message = имя лота, insertStrategy "force".
-export async function executePlan(token, plan, onProgress = () => {}) {
-  const items = plan.filter((it) => it.action === 'update' || it.action === 'create');
-  const bids = items.map((it) => it.action === 'update'
-    ? { cost: it.points, message: `#${it.fastId}`, investorId: it.investor, username: it.investor, insertStrategy: 'match', isDonation: !!it.isDonation }
-    : { cost: it.points, message: it.target, investorId: it.investor, username: it.investor, insertStrategy: 'force', isDonation: !!it.isDonation });
-
-  if (bids.length) {
-    try { await postBids(token, bids); items.forEach((it) => { it.status = 'ok'; }); }
-    catch (e) { items.forEach((it) => { it.status = 'error'; it.error = e.message; }); }
-  }
-  onProgress(bids.length, bids.length);
-  for (const it of plan) if (!it.status) it.status = 'skip';
-  return plan;
-}
-
-// ───────────────────────── откат рейтинга ─────────────────────────
-export async function updateLot(token, id, lot) {
-  const res = await fetch(`${API_BASE}/lot`, { method: 'PUT', headers: headers(token), body: JSON.stringify({ query: { id }, lot }) });
-  if (!res.ok) throw new Error(`PUT /lot → HTTP ${res.status}`);
-}
-
-// Сканирует доску: каждая метка [префикс]ник:сумма → строка отката.
-export function buildRollbackPlan(lots, prefix = LOT_PREFIX) {
-  const items = [];
-  for (const l of lots) for (const inv of (l.investors || [])) {
-    const m = parseMark(inv, prefix);
-    if (!m) continue;
-    items.push({ lotId: l.id, fastId: l.fastId, lotName: l.name, investor: inv, nick: m.nick, amount: Number.isFinite(m.amount) ? m.amount : 0 });
-  }
-  return items;
-}
-
-// Группирует выбранные метки по лоту → один PUT на лот: абсолютная сумма (текущая − снятое) + investors без снятых меток.
-export function planRollbackPuts(items, lots) {
-  const byLot = new Map();
-  for (const it of items) { if (!byLot.has(it.lotId)) byLot.set(it.lotId, []); byLot.get(it.lotId).push(it); }
-  const puts = [];
-  for (const [lotId, its] of byLot) {
-    const lot = lots.find((l) => String(l.id) === String(lotId));
-    const remove = new Set(its.map((x) => norm(x.investor)));
-    const investors = (lot ? (lot.investors || []) : []).filter((inv) => !remove.has(norm(inv)));
-    const sum = its.reduce((s, x) => s + (Number.isFinite(x.amount) ? x.amount : 0), 0);
-    const cur = lot && Number.isFinite(lot.amount) ? lot.amount : 0;
-    puts.push({ lotId, lotName: lot ? lot.name : '', amount: cur - sum, investors, removed: its.length });
-  }
-  return puts;
-}
-
-// Выполняет откат: берёт свежие лоты, считает PUT'ы, применяет (параллельно).
-export async function executeRollback(token, items, onProgress = () => {}) {
-  if (!items.length) return [];
-  const lots = await getLots(token);
-  const puts = planRollbackPuts(items, lots);
-  let done = 0;
-  await Promise.all(puts.map(async (p) => {
-    try { await updateLot(token, p.lotId, { amount: p.amount, investors: p.investors }); p.status = 'ok'; }
-    catch (e) { p.status = 'error'; p.error = e.message; }
-    onProgress(++done, puts.length);
-  }));
-  return puts;
 }

@@ -233,7 +233,7 @@ export async function syncRewards(ctx, rows, keepExtra = []) {
     const keepId = new Set(), keepTitle = new Set();
     for (const r of rows) { if (r.rewardId) keepId.add(r.rewardId); if (r.rewardTitle) keepTitle.add(titleKey(r.rewardTitle)); }
     for (const r of out) if (r.rewardId) keepId.add(r.rewardId);
-    for (const id of keepExtra) if (id) keepId.add(id); // награды других фич (напр. «Предложить фильм») не трогаем
+    for (const id of keepExtra) if (id) keepId.add(id); // награды других фич (напр. «Предложить лот») не трогаем
     for (const rw of existing) {
       if (keepId.has(rw.id) || keepTitle.has(titleKey(rw.title))) continue;
       try { await deleteReward(ctx, rw.id); } catch { /* уже удалена — ок */ }
@@ -242,7 +242,7 @@ export async function syncRewards(ctx, rows, keepExtra = []) {
   return out;
 }
 
-// Создать/обновить ОДНУ награду без зачистки сирот (для самостоятельных наград, напр. «Предложить фильм»).
+// Создать/обновить ОДНУ награду без зачистки сирот (для самостоятельных наград, напр. «Предложить лот»).
 export async function syncReward(ctx, row) {
   const body = rewardBody(row);
   let id = row.rewardId;

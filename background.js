@@ -1,14 +1,10 @@
-// Фоновый service worker: выполняет заливку и откат независимо от popup.
-// Окно расширения можно закрыть — операция дойдёт до конца.
+// Фоновый service worker: слушает Twitch EventSub (покупка PigPoints + ставки за лот),
+// держит очередь подтверждений и движок ставки. Работает, даже когда попап закрыт.
 
-import { executePlan, executeRollback, resolveRedemption, addPoints, normNick, fetchSheetRows, suggestNick, applicableMovieBadges, postBids, getLots, findMovieLot, moviePointsDecision } from './core.js';
+import { resolveRedemption, addPoints, normNick, fetchSheetRows, suggestNick, applicableMovieBadges, postBids, getLots, findMovieLot, moviePointsDecision } from './core.js';
 import { subscribeRedemptions, updateRedemptionStatus, redemptionEvent, userExists, subscribeChatMessages, chatMessageEvent, getSubTier, isVip, isMod, isFollower, DEFAULT_TWITCH_CLIENT_ID } from './twitch.js';
 
-let running = false;
-
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-  if (msg?.type === 'apply') { runApply(msg.plan).then(sendResponse).catch((e) => sendResponse({ error: e.message })); return true; }
-  if (msg?.type === 'rollback') { runRollback(msg.items).then(sendResponse).catch((e) => sendResponse({ error: e.message })); return true; }
   if (msg?.type === 'twitch-reconnect') { paused = false; ensureListener(); sendResponse?.({ ok: true }); return; }
   if (msg?.type === 'twitch-resolve') { resolvePending(msg.redemptionId, msg.action, msg.overrideNick).then(() => sendResponse({ ok: true })).catch((e) => sendResponse({ error: e.message })); return true; }
   if (msg?.type === 'twitch-resolve-all') { resolveAllPending(msg.action).then(() => sendResponse({ ok: true })).catch((e) => sendResponse({ error: e.message })); return true; }
@@ -25,44 +21,7 @@ async function token() {
   return token;
 }
 
-// ⚠️ DEPRECATED (на удаление): ручной залив/откат PigPoints в лоты. UI убран, сообщения 'apply'/'rollback'
-// больше не приходят из popup. Авто-формула фильм-ставки это заменяет. runApply/runRollback оставлены до выпила.
-async function runApply(plan) {
-  if (running) return { error: 'Операция уже идёт.' };
-  if (!Array.isArray(plan) || !plan.length) return { error: 'Пустой план.' };
-  running = true;
-  try {
-    const tok = await token();
-    const total = plan.filter((it) => it.action === 'update' || it.action === 'create').length;
-    broadcast({ type: 'progress', done: 0, total });
-    await executePlan(tok, plan, (done, t) => broadcast({ type: 'progress', done, total: t }));
-    const ok = plan.filter((it) => it.status === 'ok').length;
-    const err = plan.filter((it) => it.status === 'error').length;
-    await chrome.storage.local.set({ lastResult: { at: Date.now(), ok, err, plan }, lastApplied: { at: Date.now(), count: ok } });
-    broadcast({ type: 'done', ok, err });
-    return { ok, err };
-  } catch (e) { broadcast({ type: 'error', message: e.message }); return { error: e.message }; }
-  finally { running = false; }
-}
-
-async function runRollback(items) {
-  if (running) return { error: 'Операция уже идёт.' };
-  if (!Array.isArray(items) || !items.length) return { error: 'Нечего откатывать.' };
-  running = true;
-  try {
-    const tok = await token();
-    broadcast({ type: 'progress', done: 0, total: items.length });
-    const puts = await executeRollback(tok, items, (done, t) => broadcast({ type: 'progress', done, total: t }));
-    const ok = puts.filter((p) => p.status === 'ok').length;
-    const err = puts.filter((p) => p.status === 'error').length;
-    await chrome.storage.local.set({ lastRollback: { at: Date.now(), ok, err } });
-    broadcast({ type: 'done', ok, err });
-    return { ok, err };
-  } catch (e) { broadcast({ type: 'error', message: e.message }); return { error: e.message }; }
-  finally { running = false; }
-}
-
-// ───────────────────────── Twitch EventSub: покупка рейтинга ─────────────────────────
+// ───────────────────────── Twitch EventSub: покупка PigPoints + ставки за лот ─────────────────────────
 const WS_URL = 'wss://eventsub.wss.twitch.tv/ws';
 let ws = null;          // активный сокет
 let pendingWs = null;   // новый сокет во время graceful-reconnect (Twitch session_reconnect)
@@ -237,7 +196,7 @@ async function onRedemption(eventPayload) {
   seen.add(ev.redemptionId);
   if (seen.size > 5000) seen.delete(seen.values().next().value); // FIFO-эвикция: дедуп нужен лишь на короткое окно переотправки
   const s = await chrome.storage.local.get(null);
-  if (s.movieRewardId && ev.rewardId === s.movieRewardId) { // награда «Предложить фильм»
+  if (s.movieRewardId && ev.rewardId === s.movieRewardId) { // награда «Предложить лот»
     if (s.movieBidsActive) return onMovieRedemption({ redemptionId: ev.redemptionId, userId: ev.userId, userLogin: ev.userLogin, movie: ev.userInput || '' }); // значки придут из чата
     await setRedemption(ctxFrom(s), s.movieRewardId, ev.redemptionId, 'CANCELED'); // фича выкл → вернуть балл, не зависать
     return;
@@ -333,7 +292,7 @@ function logEvent(entry) {
   });
 }
 
-// ── фича «ставка за значки на фильм» ──
+// ── фича «ставка за значки на лот» ──
 // Надёжно, как рейтинговая ветка: незавершённые активации персистятся (moviePending) → переживают сон SW;
 // обработка сериализована (drainMovie singleton + claim-перед-обработкой = at-most-once); «зачтённое» —
 // отдельный movieCounted (без капа, авторитетный источник анти-повтора), журнал — только для показа.
@@ -345,7 +304,7 @@ const movieKey = (userId, text) => `${userId}|${movieNorm(text)}`;
 let draining = false;
 let movieGen = 0; // поколение раунда: in-flight активация со старым gen не пишет в новый раунд (сброс во время обработки)
 
-// redemption.add награды «Предложить фильм» → персист незавершённой активации (по redemptionId — без коллизий)
+// redemption.add награды «Предложить лот» → персист незавершённой активации (по redemptionId — без коллизий)
 async function onMovieRedemption(red) { // { redemptionId, userId, userLogin, movie }
   await lockMovie(async () => {
     const { moviePending = [] } = await chrome.storage.local.get('moviePending');
